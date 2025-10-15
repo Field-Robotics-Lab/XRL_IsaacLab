@@ -74,8 +74,10 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # setting aside useful variables for later
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
         self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
-        self.commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda()
-        self.commands[:,-1] = 0.0
+        self.commands = torch.randn((self.cfg.scene.num_envs, 5)).cuda() #increased to 5 to account for the position vector commands for x and y
+        self.commands[:,-5] = 0.0 #z velocity intialized as 0.0
+        # self.commands[:,-4] = 0.0 #quaternion orientation intialized as 0.0
+        # self.commands[:,-1] = 0.0 #z pose intialized as 0.0
         self.commands = self.commands/torch.linalg.norm(self.commands, dim=1, keepdim=True)
 
         # offsets to account for atan range and keep things on [-pi, pi]

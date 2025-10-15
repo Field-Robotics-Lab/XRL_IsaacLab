@@ -74,11 +74,13 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # setting aside useful variables for later
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
         self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
-        self.commands = torch.randn((self.cfg.scene.num_envs, 5)).cuda() #increased to 5 to account for the position vector commands for x and y
-        self.commands[:,-5] = 0.0 #z velocity intialized as 0.0
-        # self.commands[:,-4] = 0.0 #quaternion orientation intialized as 0.0
+        self.vel_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() #differentiate between velocity commands and position commands
+        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() #set to 3 to account for the x,y, and z position data
+        self.vel_commands[:,-1] = 0.0 #z velocity intialized as 0.0
+        self.pose_commands[:,-1] = 0.0 #z position intialized as 0.0
         # self.commands[:,-1] = 0.0 #z pose intialized as 0.0
         self.commands = self.commands/torch.linalg.norm(self.commands, dim=1, keepdim=True)
+        #print(self.commands)
 
         # offsets to account for atan range and keep things on [-pi, pi]
         ratio = self.commands[:,1]/(self.commands[:,0]+1E-8)
@@ -120,20 +122,29 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         self.velocity = self.robot.data.root_com_vel_w
+        self.pose = math_utils.quat_apply(self.robot.data.root_com_pose_w, self.data._root_com_pose_w) #identify position in world frame
+        x_pose = self.pose[:,0] #column vector for all current x positions
+        x_commands = self.pose_commands[:,0] #column vector for all x commands
+        y_pose = self.pose[:,1] #column vector for all current y positions
+        y_commands = self.pose_commands[:,1] #column vector for all x commands
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
 
-        dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
-        cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
+        dot = torch.sum(self.forwards * self.vel_commands, dim=-1, keepdim=True)
+        cross = torch.cross(self.forwards, self.vel_commands, dim=-1)[:,-1].reshape(-1,1)
         forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        obs = torch.hstack((dot, cross, forward_speed))
+        x_dif = torch.sub(x_commands,x_pose)
+        y_dif = torch.sub(y_commands,y_pose)
+        obs = torch.hstack((dot, cross, forward_speed,x_dif,y_dif))
 
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         forward_reward = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        alignment_reward = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
-        total_reward = forward_reward * torch.exp(alignment_reward)
+        alignment_reward = torch.sum(self.forwards * self.vel_commands, dim=-1, keepdim=True)
+        #distance_reward = torch.sum(x_dif * y_dif)
+        total_reward = forward_reward * torch.exp(alignment_reward) #subtract out a distance reward that will force the robot to minimize the distance between the pose commands and 
+        #current pose.
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:

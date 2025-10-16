@@ -19,7 +19,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     # - spaces definition
     action_space = 2
-    observation_space = 5 #x,y,z velocities and x and y positions deficits
+    observation_space = 4 #x,y,z velocities and euclidean distance to the target location
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)

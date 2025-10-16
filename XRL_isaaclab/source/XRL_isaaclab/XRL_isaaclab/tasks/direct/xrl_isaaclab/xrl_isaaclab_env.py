@@ -55,12 +55,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-        cfg = sim_utils.UsdFileCfg(
-            usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
-        )
+        # cfg = sim_utils.UsdFileCfg(
+        #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
+        # )
 
-        prim_path = '/World/background'
-        cfg.func(prim_path, cfg)
+        # prim_path = '/World/background'
+        # cfg.func(prim_path, cfg)
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
@@ -79,13 +79,14 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.vel_commands[:,-1] = 0.0 #z velocity intialized as 0.0
         self.pose_commands[:,-1] = 0.0 #z position intialized as 0.0
         # self.commands[:,-1] = 0.0 #z pose intialized as 0.0
-        self.commands = self.commands/torch.linalg.norm(self.commands, dim=1, keepdim=True)
+        self.vel_commands = self.vel_commands/torch.linalg.norm(self.vel_commands, dim=1, keepdim=True)
+        self.pose_commands = self.pose_commands/torch.linalg.norm(self.vel_commands, dim=1, keepdim=True)
         #print(self.commands)
 
         # offsets to account for atan range and keep things on [-pi, pi]
-        ratio = self.commands[:,1]/(self.commands[:,0]+1E-8)
-        gzero = torch.where(self.commands > 0, True, False)
-        lzero = torch.where(self.commands < 0, True, False)
+        ratio = self.vel_commands[:,1]/(self.vel_commands[:,0]+1E-8)
+        gzero = torch.where(self.vel_commands > 0, True, False)
+        lzero = torch.where(self.vel_commands < 0, True, False)
         plus = lzero[:,0]*gzero[:,1]
         minus = lzero[:,0]*lzero[:,1]
         offsets = torch.pi*plus - torch.pi*minus
@@ -122,10 +123,10 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         self.velocity = self.robot.data.root_com_vel_w
-        self.pose = math_utils.quat_apply(self.robot.data.root_com_pose_w, self.data._root_com_pose_w) #identify position in world frame
-        x_pose = self.pose[:,0] #column vector for all current x positions
+        self.pose = self.robot.data.root_com_pose_w #math_utils.quat_apply(self.robot.data.root_com_pose_w, self.robot.data._root_com_pose_w) #identify position in world frame
+        x_pose = self.pose[:,1] #column vector for all current x positions
         x_commands = self.pose_commands[:,0] #column vector for all x commands
-        y_pose = self.pose[:,1] #column vector for all current y positions
+        y_pose = self.pose[:,2] #column vector for all current y positions
         y_commands = self.pose_commands[:,1] #column vector for all x commands
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
 
@@ -134,16 +135,25 @@ class XrlIsaaclabEnv(DirectRLEnv):
         forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
-        obs = torch.hstack((dot, cross, forward_speed,x_dif,y_dif))
+        dist = torch.pow((torch.pow(x_dif,2) + torch.pow(y_dif,2)),0.5).reshape(-1,1)
+        obs = torch.hstack((dot, cross, forward_speed, dist))
 
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         forward_reward = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        alignment_reward = torch.sum(self.forwards * self.vel_commands, dim=-1, keepdim=True)
-        #distance_reward = torch.sum(x_dif * y_dif)
-        total_reward = forward_reward * torch.exp(alignment_reward) #subtract out a distance reward that will force the robot to minimize the distance between the pose commands and 
+        #alignment_reward = torch.sum(self.forwards * self.vel_commands, dim=-1, keepdim=True)
+        self.pose = self.robot.data.root_com_pose_w #math_utils.quat_apply(self.robot.data.root_com_pose_w, self.robot.data._root_com_pose_w) #identify position in world frame
+        x_pose = self.pose[:,1] #column vector for all current x positions
+        x_commands = self.pose_commands[:,0] #column vector for all x commands
+        y_pose = self.pose[:,2] #column vector for all current y positions
+        y_commands = self.pose_commands[:,1] #column vector for all x commands
+        x_dif = torch.sub(x_commands,x_pose)
+        y_dif = torch.sub(y_commands,y_pose)
+        dist = torch.pow((torch.pow(x_dif,2) + torch.pow(y_dif,2)),0.5).reshape(-1,1)
+        distance_reward = dist
+        total_reward = forward_reward - distance_reward #subtract out a distance reward that will force the robot to minimize the distance between the pose commands and 
         #current pose.
         return total_reward
 
@@ -158,14 +168,17 @@ class XrlIsaaclabEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         # pick new commands for reset envs
-        self.commands[env_ids] = torch.randn((len(env_ids), 3)).cuda()
-        self.commands[env_ids,-1] = 0.0
-        self.commands[env_ids] = self.commands[env_ids]/torch.linalg.norm(self.commands[env_ids], dim=1, keepdim=True)
+        self.vel_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() 
+        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() 
+        self.vel_commands[:,-1] = 0.0 
+        self.pose_commands[:,-1] = 0.0
+        self.vel_commands = self.vel_commands/torch.linalg.norm(self.vel_commands, dim=1, keepdim=True)
+        self.pose_commands = self.pose_commands/torch.linalg.norm(self.vel_commands, dim=1, keepdim=True)
 
         # recalculate the orientations for the command markers with the new commands
-        ratio = self.commands[env_ids][:,1]/(self.commands[env_ids][:,0]+1E-8)
-        gzero = torch.where(self.commands[env_ids] > 0, True, False)
-        lzero = torch.where(self.commands[env_ids]< 0, True, False)
+        ratio = self.vel_commands[env_ids][:,1]/(self.vel_commands[env_ids][:,0]+1E-8)
+        gzero = torch.where(self.vel_commands[env_ids] > 0, True, False)
+        lzero = torch.where(self.vel_commands[env_ids]< 0, True, False)
         plus = lzero[:,0]*gzero[:,1]
         minus = lzero[:,0]*lzero[:,1]
         offsets = torch.pi*plus - torch.pi*minus

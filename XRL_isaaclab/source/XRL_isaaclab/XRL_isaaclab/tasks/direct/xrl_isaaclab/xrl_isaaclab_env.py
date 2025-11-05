@@ -59,12 +59,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-        # cfg = sim_utils.UsdFileCfg(
-        #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
-        # )
+        cfg = sim_utils.UsdFileCfg(
+            usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
+        )
 
-        # prim_path = '/World/background'
-        # cfg.func(prim_path, cfg)
+        prim_path = '/World/background'
+        cfg.func(prim_path, cfg)
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
@@ -135,6 +135,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
         pose_target = torch.sub(self.pose_commands, self.pose)
+        self.forwards[:,-1] = 0.0
+        pose_target[:,-1] = 0.0
 
         dot = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, pose_target, dim=-1)[:,-1].reshape(-1,1)

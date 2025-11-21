@@ -18,6 +18,9 @@ import isaaclab.utils.math as math_utils
 
 from .xrl_isaaclab_env_cfg import XrlIsaaclabEnvCfg
 
+from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.terrains.config import ROUGH_TERRAINS_CFG
+
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
     marker_cfg = VisualizationMarkersCfg(
@@ -59,12 +62,24 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-        cfg = sim_utils.UsdFileCfg(
-            usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
+        # cfg = sim_utils.UsdFileCfg(
+        #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
+        # )
+
+        # prim_path = '/World/background'
+        # cfg.func(prim_path, cfg)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        # Terrain importer configuration
+        terrain_importer_cfg = TerrainImporterCfg(
+            prim_path="/World/Terrain",
+            terrain_type="generator",
+            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED
         )
 
-        prim_path = '/World/background'
-        cfg.func(prim_path, cfg)
+        # Instantiate importer
+        terrain_importer_cfg.class_type(terrain_importer_cfg)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        # Auto-import happens inside __init__, so NO further calls needed.
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
@@ -78,10 +93,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # setting aside useful variables for later
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
         self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
-        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() #set to 3 to account for the x,y, and z position data
-        self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
+        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda()#set to 3 to account for the x,y, and z position data
+        #self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
         self.pose_commands[:, -1] = 0.0
         self.offsets = self.scene.env_origins[:,:3].clone() #save the individual environment offsets
+        print(self.pose_commands)
 
 
         # offsets to account for atan range and keep things on [-pi, pi]
@@ -113,8 +129,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         # offset markers so they are above the jetbot
         forward_loc = self.forward_marker_location + self.marker_offset
-        #command_loc = self.command_marker_location + self.marker_offset
         target_loc = self.target_marker_location
+        target_loc = target_loc + self.marker_offset #offset target marker to be above ground plane
         loc = torch.vstack((forward_loc, target_loc))
         rots = torch.vstack((self.forward_marker_orientations, self.target_marker_orientations))
 
@@ -189,9 +205,9 @@ class XrlIsaaclabEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         # pick new commands for reset envs
-        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda()
+        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() + 5
         self.pose_commands[:,-1] = 0.0
-        self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
+        #self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
         self.pose_commands = self.pose_commands + self.offsets  #Apply the offsets pulled in the _setup_scene method to the commands to ensure that the commands are populated at the individual environment level.
         
 

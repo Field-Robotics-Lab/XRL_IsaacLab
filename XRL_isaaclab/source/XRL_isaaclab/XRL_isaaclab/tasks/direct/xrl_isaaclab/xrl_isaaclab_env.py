@@ -73,7 +73,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/Terrain",
             terrain_type="generator",
-            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED
+            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
+            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4
         )
 
         # Instantiate importer

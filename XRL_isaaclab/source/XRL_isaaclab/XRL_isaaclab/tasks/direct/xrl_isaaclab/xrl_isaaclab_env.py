@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import math
 import torch
 from collections.abc import Sequence
@@ -23,21 +24,32 @@ from isaaclab.terrains.config import ROUGH_TERRAINS_CFG
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
+
+    # Requires environmental variable ISAAC_ASSETS to be set to the path where Isaac Sim assets are located.  
+    # This is brittle and should be replaced with a more robust asset management solution.
+    isaac_assets = os.environ.get("ISAAC_ASSETS")
+    if isaac_assets is None:
+        raise EnvironmentError("ISAAC_ASSETS environment variable is not set. Please set it before running the application.")
+    print(f"ISAAC_ASSETS environment variable: {isaac_assets}")
+    x_arrow_path = f"{isaac_assets}/Assets/Isaac/4.5/Isaac/Props/UIElements/arrow_x.usd"
+    disk_path = f"{isaac_assets}/Assets/Isaac/4.5/Isaac/Props/Shapes/disk.usd"
+
+
     marker_cfg = VisualizationMarkersCfg(
         prim_path="/Visuals/myMarkers",
         markers={
                 "forward": sim_utils.UsdFileCfg(
-                    usd_path="/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Props/UIElements/arrow_x.usd",
+                    usd_path=x_arrow_path,
                     scale=(0.25, 0.25, 0.5),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                 ),
                 # "command": sim_utils.UsdFileCfg(
-                #     usd_path="/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Props/UIElements/arrow_x.usd",
+                #     usd_path=x_arrow_path,
                 #     scale=(0.25, 0.25, 0.5),
                 #     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                 # ),
                 "target": sim_utils.UsdFileCfg(
-                    usd_path="/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Props/Shapes/disk.usd",
+                    usd_path=disk_path,
                     scale=(0.25, 0.25, 0.5),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                 )

@@ -14,6 +14,11 @@ a more user-friendly way.
 
 import argparse
 import sys
+#######################################################################################################
+import time
+import json
+from pathlib import Path
+#######################################################################################################
 
 from isaaclab.app import AppLauncher
 
@@ -198,7 +203,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
+    #######################################################################################################
+    start = time.perf_counter()
     # run the main function
-    main()
+    result = main()
+    end = time.perf_counter()
+
+    run_time = end - start
+    minutes = run_time // 60
+    seconds = run_time % 60
+    print(f"\n[INFO] Total training time: {int(minutes)} minutes and {seconds:.2f} seconds")
+    #######################################################################################################
     # close sim app
     simulation_app.close()

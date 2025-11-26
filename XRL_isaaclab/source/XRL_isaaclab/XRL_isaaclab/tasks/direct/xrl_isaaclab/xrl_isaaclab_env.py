@@ -59,12 +59,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-        cfg = sim_utils.UsdFileCfg(
-            usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
-        )
+        # cfg = sim_utils.UsdFileCfg(
+        #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
+        # )
 
-        prim_path = '/World/background'
-        cfg.func(prim_path, cfg)
+        # prim_path = '/World/background'
+        # cfg.func(prim_path, cfg)
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene

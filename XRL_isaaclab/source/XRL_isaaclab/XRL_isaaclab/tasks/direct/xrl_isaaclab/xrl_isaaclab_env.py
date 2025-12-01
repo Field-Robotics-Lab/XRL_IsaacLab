@@ -82,15 +82,15 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # cfg.func(prim_path, cfg)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         # Terrain importer configuration
-        terrain_importer_cfg = TerrainImporterCfg(
-            prim_path="/World/Terrain",
-            terrain_type="generator",
-            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
-            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4
-        )
+        # terrain_importer_cfg = TerrainImporterCfg(
+        #     prim_path="/World/Terrain",
+        #     terrain_type="generator",
+        #     terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
+        #     #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4
+        # )
 
-        # Instantiate importer
-        terrain_importer_cfg.class_type(terrain_importer_cfg)
+        # # Instantiate importer
+        # terrain_importer_cfg.class_type(terrain_importer_cfg)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         # Auto-import happens inside __init__, so NO further calls needed.
         # clone and replicate

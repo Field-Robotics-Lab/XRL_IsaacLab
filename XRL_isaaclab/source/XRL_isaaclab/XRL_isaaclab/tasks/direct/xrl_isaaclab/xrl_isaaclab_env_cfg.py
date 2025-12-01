@@ -18,7 +18,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # env
     #seed = 5
     decimation = 2
-    episode_length_s = 20.0
+    episode_length_s = 30.0
     # - spaces definition
     action_space = 4
     observation_space = 3 #x,y,z velocities and euclidean distance to the target location
@@ -29,4 +29,4 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = JACKAL_BASIC_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
-    dof_names = ["left_front_wheel", "right_front_wheel", "left_back_wheel", "right_back_wheel"]
+    dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']

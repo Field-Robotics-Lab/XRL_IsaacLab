@@ -10,7 +10,7 @@ if isaac_assets is None:
 
 print(f"ISAAC_ASSETS environment variable: {isaac_assets}")
 
-jetbot_path = f"{isaac_assets}/Assets/Isaac/4.5/Isaac/Robots/Jetbot/jetbot.usd"
+jetbot_path = f"{isaac_assets}/Assets/Isaac/5.0/Isaac/Robots/Jetbot/jetbot.usd"
 JETBOT_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(usd_path=jetbot_path),
     actuators={"wheel_acts": ImplicitActuatorCfg(joint_names_expr=[".*"], damping=None, stiffness=None)},

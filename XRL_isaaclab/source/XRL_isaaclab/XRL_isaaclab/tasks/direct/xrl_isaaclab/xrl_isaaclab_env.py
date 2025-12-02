@@ -80,7 +80,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         # prim_path = '/World/background'
         # cfg.func(prim_path, cfg)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # Terrain importer configuration
         terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/Terrain",
@@ -91,12 +91,28 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         # Instantiate importer
         terrain_importer_cfg.class_type(terrain_importer_cfg)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # Auto-import happens inside __init__, so NO further calls needed.
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        # 3) Flat spawn patches
+        flat_patch_cfg = sim_utils.CuboidCfg(
+            size=(0.5, 0.5, 0.025),  # Lx, Ly, thickness
+            collision_props=sim_utils.CollisionPropertiesCfg()
+            # visual_material=sim_utils.PreviewSurfaceCfg(
+            #     diffuse_color=(0.1, 0.8, 0.1)  # optional: make it green so you can see it
+            # ),
+        )
+        flat_patch_cfg.func(
+            "/World/envs/env_.*/flat_spawn",
+            flat_patch_cfg,
+            translation=(0.0, 0.0, 0.0125),      # ≈ thickness/2
+            orientation=(1.0, 0.0, 0.0, 0.0),
+        )
+            #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)

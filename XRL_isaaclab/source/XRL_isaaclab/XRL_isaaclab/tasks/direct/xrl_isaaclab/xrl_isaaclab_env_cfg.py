@@ -5,7 +5,7 @@
 
 from XRL_isaaclab.robots.jackal_basic import JACKAL_BASIC_CONFIG
 
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -26,7 +26,13 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
     # robot(s)
-    robot_cfg: ArticulationCfg = JACKAL_BASIC_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg: ArticulationCfg = JACKAL_BASIC_CONFIG.replace(
+        prim_path="/World/envs/env_.*/Robot",
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.21),
+            rot=(1.0, 0.0, 0.0, 0.0)
+        ),
+    )
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
     dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']

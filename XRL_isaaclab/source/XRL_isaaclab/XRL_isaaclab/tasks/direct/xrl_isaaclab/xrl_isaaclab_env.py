@@ -11,7 +11,7 @@ import torch
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
@@ -73,6 +73,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+
         #add background
         # cfg = sim_utils.UsdFileCfg(
         #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
@@ -93,10 +94,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         terrain_importer_cfg.class_type(terrain_importer_cfg)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # Auto-import happens inside __init__, so NO further calls needed.
-        # clone and replicate
-        self.scene.clone_environments(copy_from_source=False)
-        # add articulation to scene
-        self.scene.articulations["robot"] = self.robot
+
+        #add flat spawn points for the Jackal
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # 3) Flat spawn patches
         flat_patch_cfg = sim_utils.CuboidCfg(
@@ -112,7 +111,32 @@ class XrlIsaaclabEnv(DirectRLEnv):
             translation=(0.0, 0.0, 0.0125),      # ≈ thickness/2
             orientation=(1.0, 0.0, 0.0, 0.0),
         )
-            #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+
+        #add randomly generated obstacles
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        # Spawn obstacle template in env_0 (cloner replicates to all envs automatically)
+        sim_utils.spawn_from_cfg(
+            prim_path="/World/envs/env_0/Obstacles/box_0",
+            cfg=self.cfg.obstacle_cfg.spawn,
+        )
+
+        # Create a view so we can move obstacles later
+        self.obstacle = RigidObject(self.cfg.obstacle_cfg)
+        self.scene.rigid_objects["obstacle"] = self.obstacle
+
+        # Keep helper values for later randomization
+        self.num_obstacles = 1
+        self.obstacle_xy_range = 2.5
+        self.obstacle_min_height = 0.2
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+        
+        # clone and replicate
+        self.scene.clone_environments(copy_from_source=False)
+
+        # add articulation to scene
+        self.scene.articulations["robot"] = self.robot
+        
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)

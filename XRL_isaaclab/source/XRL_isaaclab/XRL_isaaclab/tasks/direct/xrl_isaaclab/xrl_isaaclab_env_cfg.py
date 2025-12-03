@@ -11,6 +11,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 import math
+import isaaclab.sim as sim_utils
 
 
 @configclass

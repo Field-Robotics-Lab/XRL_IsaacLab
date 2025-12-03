@@ -279,3 +279,31 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
         self._visualize_markers()
+
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        obstacle_view = self.scene.rigid_objects["obstacle"]
+
+        # origins for selected envs
+        env_origins = self.scene.env_origins[env_ids]
+
+        n = env_ids.shape[0]
+        device = self.device
+
+        # random XY inside a square
+        rand_xy = (torch.rand(n, 2, device=device) * 2 - 1) * self.obstacle_xy_range
+
+        # place obstacles slightly above ground
+        z = torch.full((n, 1), self.obstacle_min_height, device=device)
+
+        positions = torch.cat([rand_xy, z], dim=-1) + env_origins
+
+        # random yaw rotation
+        yaw = (torch.rand(n, device=device) * 2 - 1) * torch.pi
+        quat = quat_from_euler_xyz(
+            torch.zeros_like(yaw),
+            torch.zeros_like(yaw),
+            yaw,
+        )
+
+        obstacle_view.set_world_poses(positions, quat, env_ids=env_ids)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^

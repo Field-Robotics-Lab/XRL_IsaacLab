@@ -86,7 +86,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
             prim_path="/World/Terrain",
             terrain_type="generator",
             terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
-            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4
+            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4; for jetbot
+            #noise range = (-0.2, 0.2), noise step = 0.005, downsampled scale = 0.4; for jackal
         )
 
         # Instantiate importer

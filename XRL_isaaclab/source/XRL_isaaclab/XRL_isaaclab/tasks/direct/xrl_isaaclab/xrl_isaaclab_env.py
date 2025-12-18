@@ -21,6 +21,7 @@ from .xrl_isaaclab_env_cfg import XrlIsaaclabEnvCfg
 
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.config import ROUGH_TERRAINS_CFG
+from isaaclab.sensors import RayCaster
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
@@ -62,11 +63,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     def __init__(self, cfg: XrlIsaaclabEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
-        # self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
-        # self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
-        # self.joint_pos = self.robot.data.joint_pos
-        # self.joint_vel = self.robot.data.joint_vel
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
 
     def _setup_scene(self):
@@ -74,14 +70,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-        # cfg = sim_utils.UsdFileCfg(
-        #     usd_path = "/home/jrshs79/isaacsim/isaacsim_assets/isaac-sim-assets-1@4.5.0-rc.36+release.19112.f59b3005/Assets/Isaac/4.5/Isaac/Environments/Terrains/rough_plane.usd"
-        # )
-
-        # prim_path = '/World/background'
-        # cfg.func(prim_path, cfg)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-        # Terrain importer configuration
+            # Terrain importer configuration
         terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/Terrain",
             terrain_type="generator",
@@ -90,16 +79,14 @@ class XrlIsaaclabEnv(DirectRLEnv):
             #noise range = (-0.2, 0.2), noise step = 0.005, downsampled scale = 0.4; for jackal
         )
 
-        # Instantiate importer
+            # Instantiate importer
         terrain_importer_cfg.class_type(terrain_importer_cfg)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
-        # Auto-import happens inside __init__, so NO further calls needed.
+            # Auto-import happens inside __init__, so NO further calls needed.
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-        # 3) Flat spawn patches
+        # flat spawn patches
         flat_patch_cfg = sim_utils.CuboidCfg(
             size=(0.5, 0.5, 0.025),  # Lx, Ly, thickness
             collision_props=sim_utils.CollisionPropertiesCfg()
@@ -113,7 +100,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
             translation=(0.0, 0.0, 0.0125),      # ≈ thickness/2
             orientation=(1.0, 0.0, 0.0, 0.0),
         )
-            #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        # add raycaster for depth measurments
+        self.ground_ray = RayCaster(self.cfg.ground_ray)
+        self.scene.add_sensor("ground_ray", self.ground_ray)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -178,6 +169,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
     def _get_observations(self) -> dict:
+        self.ground_ray.update(self.dt) #added for ray sensor update
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
         pose_target = torch.sub(self.pose_commands, self.pose)
@@ -196,6 +188,18 @@ class XrlIsaaclabEnv(DirectRLEnv):
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
         dist = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1,1)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+            # shape: (num_envs, num_rays, 3)
+        hit_pos_w = self.ground_ray.data.hit_pos_w
+            # since we only cast 1 ray:
+        ground_z = hit_pos_w[:, 0, 2]
+        hit_dist = self.ground_ray.data.hit_dist
+        ground_z = torch.where(
+            torch.isfinite(hit_dist[:, 0]),
+            hit_pos_w[:, 0, 2],
+            self.root_pos_w[:, 2] - 1.0  # safe fallback
+        )
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         obs = torch.hstack((dot, cross, dist))
 
@@ -211,6 +215,17 @@ class XrlIsaaclabEnv(DirectRLEnv):
         pose_target = torch.sub(self.pose_commands, self.pose)
         alignment_reward = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
 
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
+        com_z = self.robot.data.root_com_pos_w[:, 2]
+        h = com_z - ground_z
+        roll_crit = torch.atan((2*h)/0.3765) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
+        roll = euler[0]
+        roll_deg = abs(roll * (360 / (2*math.pi)))
+        pitch = euler[1]
+        pitch_deg = abs(pitch *(360/ (2*math.pi)))
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+
         x_pose = self.pose[:,0] #column vector for all current x positions
         x_commands = self.pose_commands[:,0] #column vector for all x commands
         y_pose = self.pose[:,1] #column vector for all current y positions
@@ -222,6 +237,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         distance_reward = 1-(dist/d_0) #minimize the distance from agent to target
 
         total_reward = vel*torch.exp(alignment_reward) + distance_reward
+        print(pitch_deg)
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:

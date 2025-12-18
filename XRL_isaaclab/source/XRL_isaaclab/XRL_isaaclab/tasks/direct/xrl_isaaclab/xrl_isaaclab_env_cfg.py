@@ -11,6 +11,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 import math
+from isaaclab.sensors import RayCasterCfg
 
 
 @configclass
@@ -36,3 +37,15 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
     dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
+    ##################################################################
+    # ray sensor
+    ground_ray = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base_link",  # cast from base
+        offset=sim_utils.Transform(
+            pos=(0.0, 0.0, 0.5),   # start ray above base
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+        ray_directions=[(0.0, 0.0, -1.0)],  # straight down
+        max_distance=5.0,
+        debug_vis=False,
+    )

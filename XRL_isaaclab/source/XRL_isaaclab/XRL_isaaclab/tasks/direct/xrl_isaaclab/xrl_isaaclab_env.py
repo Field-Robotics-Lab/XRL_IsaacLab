@@ -103,7 +103,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # add raycaster for depth measurments
         self.ground_ray = RayCaster(self.cfg.ground_ray)
-        self.scene.add_sensor("ground_ray", self.ground_ray)
+        self.scene.sensors["ground_ray"] = self.ground_ray
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -169,16 +169,15 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
     def _get_observations(self) -> dict:
-        self.ground_ray.update(self.dt) #added for ray sensor update
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
         pose_target = torch.sub(self.pose_commands, self.pose)
         self.forwards[:,-1] = 0.0
         pose_target[:,-1] = 0.0
 
-        dot = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
-        cross = torch.cross(self.forwards, pose_target, dim=-1)[:,-1].reshape(-1,1)
-        #forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
+        # dot = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
+        # cross = torch.cross(self.forwards, pose_target, dim=-1)[:,-1].reshape(-1,1)
+        forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
         
         x_pose = self.pose[:,0] #column vector for all current x positions
@@ -188,42 +187,74 @@ class XrlIsaaclabEnv(DirectRLEnv):
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
         dist = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1,1)
+
+        euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
+        roll  = euler[0] #pull the real-time roll angle from the euler tensor
+        #roll_deg = torch.abs(roll * (360 / (2*math.pi)))[0]
+        roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1) #convert the roll angle above to degrees
+
+        pitch = euler[1]
+        #pitch_deg = torch.abs(pitch *(360/ (2*math.pi)))[0]
+        pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-            # shape: (num_envs, num_rays, 3)
-        hit_pos_w = self.ground_ray.data.hit_pos_w
-            # since we only cast 1 ray:
-        ground_z = hit_pos_w[:, 0, 2]
-        hit_dist = self.ground_ray.data.hit_dist
+        # Get the ray sensor (use ONE handle consistently)
+        ray = self.scene.sensors["ground_ray"]
+
+        # Update it each step (your env doesn't have self.dt)
+        ray.update(self.cfg.sim.dt)
+
+        # Hit positions (num_envs, num_rays, 3)
+        ray_hits_w = ray.data.ray_hits_w
+
+        # One ray → ground z
+        ground_z = ray_hits_w[:, 0, 2]
+
+        # Fallback if miss is encoded as NaN/inf
         ground_z = torch.where(
-            torch.isfinite(hit_dist[:, 0]),
-            hit_pos_w[:, 0, 2],
-            self.root_pos_w[:, 2] - 1.0  # safe fallback
+            torch.isfinite(ground_z),
+            ground_z,
+            self.robot.data.root_pos_w[:, 2] - 1.0
         )
+
+        self.ground_z = ground_z
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
-        obs = torch.hstack((dot, cross, dist))
-
+        obs = torch.hstack((forward_speed, dist, roll_deg, pitch_deg))
+        # print("pitch shape:", pitch.shape)
+        # print("pitch_deg shape:", pitch_deg.shape, "ndim:", pitch_deg.ndim)
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        vel = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        #v_0 = 2.0
+        #vel = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
+        v_0 = 2.0
         #velocity_reward = (vel/v_0)-1
+        forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
+        speed_reward = 1-(forward_speed/v_0)
 
 
-        pose_target = torch.sub(self.pose_commands, self.pose)
-        alignment_reward = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
+        # pose_target = torch.sub(self.pose_commands, self.pose)
+        # alignment_reward = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
 
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
         com_z = self.robot.data.root_com_pos_w[:, 2]
-        h = com_z - ground_z
-        roll_crit = torch.atan((2*h)/0.3765) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
-        roll = euler[0]
-        roll_deg = abs(roll * (360 / (2*math.pi)))
+        h = torch.clamp(com_z - self.ground_z, min=1e-3)
+        track_width = 0.3765
+        track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
+        roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
+        roll_0 = (0.8 * roll_crit) * (360 / (2*math.pi)) #set the threshold angle for the reward to 80% of the critical roll angle
+        roll  = euler[0] #pull the real-time roll angle from the euler tensor
+        #roll_deg = torch.abs(roll * (360 / (2*math.pi))) #convert the roll angle above to degrees
+        roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
+
         pitch = euler[1]
-        pitch_deg = abs(pitch *(360/ (2*math.pi)))
+        #pitch_deg = torch.abs(pitch *(360/ (2*math.pi)))
+        pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
+        pitch_0 = 20
+
+        roll_reward = 1-(roll_deg/roll_0)
+        pitch_reward = 1-(pitch_deg/pitch_0)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         x_pose = self.pose[:,0] #column vector for all current x positions
@@ -236,8 +267,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         d_0 = 5.0
         distance_reward = 1-(dist/d_0) #minimize the distance from agent to target
 
-        total_reward = vel*torch.exp(alignment_reward) + distance_reward
-        print(pitch_deg)
+        #total_reward = vel*torch.exp(alignment_reward) + distance_reward
+        total_reward = 1.0*forward_speed + 1.0*distance_reward + 1.0*roll_reward + 0.5*pitch_reward
+        #print(f'roll:{roll_deg[0]} critical:{roll_0[0]} reward:{roll_reward[0]}')
+        #print(f'pitch:{pitch_deg[0]} threshold:{pitch_0} reward:{pitch_reward[0]}')
+        #print(f'speed:{forward_speed[0]} distance:{distance_reward[0]} roll:{roll_reward[0]} pitch:{pitch_reward[0]} total:{total_reward[0]}')
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:

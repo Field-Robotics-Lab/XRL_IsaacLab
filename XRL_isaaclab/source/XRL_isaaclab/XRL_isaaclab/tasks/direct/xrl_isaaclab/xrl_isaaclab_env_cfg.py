@@ -12,6 +12,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 import math
 from isaaclab.sensors import RayCasterCfg
+from isaaclab.sensors.ray_caster.patterns.patterns_cfg import GridPatternCfg
 
 
 @configclass
@@ -22,7 +23,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 45.0
     # - spaces definition
     action_space = 4
-    observation_space = 3 #x,y,z velocities and euclidean distance to the target location
+    observation_space = 4 #roll, pitch, distance, and forward velocity
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -37,15 +38,22 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
     dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
-    ##################################################################
+    ################################################################## v
     # ray sensor
     ground_ray = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",  # cast from base
-        offset=sim_utils.Transform(
-            pos=(0.0, 0.0, 0.5),   # start ray above base
-            rot=(1.0, 0.0, 0.0, 0.0),
+        prim_path="/World/envs/env_.*/Robot",
+
+        # THIS is the key line
+        mesh_prim_paths=["/World/Terrain"],
+
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.5)),
+
+        pattern_cfg=GridPatternCfg(
+            resolution=0.05,        # bigger than size -> ~1 sample
+            size=(0.01, 0.01),      # tiny footprint
+            direction=(0.0, 0.0, -1.0),
         ),
-        ray_directions=[(0.0, 0.0, -1.0)],  # straight down
         max_distance=5.0,
-        debug_vis=False,
+        ray_alignment="world",
     )
+    ################################################################## ^

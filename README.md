@@ -77,6 +77,9 @@ python ./XRL_isaaclab/scripts/zero_agent.py --num_envs=10 --task=Template-Xrl-Is
 Initial setup of an skrl single agent environment that was derived from the official IsaacLab walkthrough pages found below:
 https://isaac-sim.github.io/IsaacLab/main/source/setup/walkthrough/index.html
 
+See the following link for instructions on how to swap in different robot assets and terrain packages: 
+https://github.com/Field-Robotics-Lab/isaac_lab_walkthrough
+
 ### end_to_end
 
 Modify the resulting walkthrough enviornment to teach the specified robot to drive to a randomly generated target location

@@ -70,21 +70,21 @@ export ISAAC_ASSETS=/home/bsb/isaacsim_assets
 python ./XRL_isaaclab/scripts/zero_agent.py --num_envs=10 --task=Template-Xrl-Isaaclab-Direct-v0
 ```
 
-##Working Branches
+## Working Branches
 
-###Tutorial
+### Tutorial
 
 Initial setup of an skrl single agent environment that was derived from the official IsaacLab walkthrough pages found below:
 https://isaac-sim.github.io/IsaacLab/main/source/setup/walkthrough/index.html
 
-###end_to_end
+### end_to_end
 
 Modify the resulting walkthrough enviornment to teach the specified robot to drive to a randomly generated target location
 
-###rough_terrain
+### rough_terrain
 
 Modify end_to_end environment with procedually generated terrain using the rough.py method provided with the basic enviornment setup.
 
-###update_reward
+### update_reward
 
 Changed the reward structure from that provided in the walkthrough tutorial to include forward velocity, roll, pitch, distance, and alignment signals.

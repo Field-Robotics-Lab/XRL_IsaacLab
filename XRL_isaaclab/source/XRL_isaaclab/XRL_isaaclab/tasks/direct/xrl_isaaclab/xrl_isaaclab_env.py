@@ -87,19 +87,19 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # flat spawn patches
-        flat_patch_cfg = sim_utils.CuboidCfg(
-            size=(0.5, 0.5, 0.025),  # Lx, Ly, thickness
-            collision_props=sim_utils.CollisionPropertiesCfg()
-            # visual_material=sim_utils.PreviewSurfaceCfg(
-            #     diffuse_color=(0.1, 0.8, 0.1)  # optional: make it green so you can see it
-            # ),
-        )
-        flat_patch_cfg.func(
-            "/World/envs/env_.*/flat_spawn",
-            flat_patch_cfg,
-            translation=(0.0, 0.0, 0.0125),      # ≈ thickness/2
-            orientation=(1.0, 0.0, 0.0, 0.0),
-        )
+        # flat_patch_cfg = sim_utils.CuboidCfg(
+        #     size=(0.5, 0.5, 0.0125),  # Lx, Ly, thickness
+        #     collision_props=sim_utils.CollisionPropertiesCfg()
+        #     # visual_material=sim_utils.PreviewSurfaceCfg(
+        #     #     diffuse_color=(0.1, 0.8, 0.1)  # optional: make it green so you can see it
+        #     # ),
+        # )
+        # flat_patch_cfg.func(
+        #     "/World/envs/env_.*/flat_spawn",
+        #     flat_patch_cfg,
+        #     translation=(0.0, 0.0, 0.00625),      # ≈ thickness/2
+        #     orientation=(1.0, 0.0, 0.0, 0.0),
+        # )
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # add raycaster for depth measurments
         self.ground_ray = RayCaster(self.cfg.ground_ray)
@@ -175,8 +175,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.forwards[:,-1] = 0.0
         pose_target[:,-1] = 0.0
 
-        # dot = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
-        # cross = torch.cross(self.forwards, pose_target, dim=-1)[:,-1].reshape(-1,1)
+        dot = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
+        cross = torch.cross(self.forwards, pose_target, dim=-1)[:,-1].reshape(-1,1)
         forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
         
@@ -219,7 +219,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.ground_z = ground_z
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
-        obs = torch.hstack((forward_speed, dist, roll_deg, pitch_deg))
+        obs = torch.hstack((forward_speed, dot, cross, dist, roll_deg, pitch_deg))
         # print("pitch shape:", pitch.shape)
         # print("pitch_deg shape:", pitch_deg.shape, "ndim:", pitch_deg.ndim)
         observations = {"policy": obs}
@@ -230,11 +230,15 @@ class XrlIsaaclabEnv(DirectRLEnv):
         v_0 = 2.0
         #velocity_reward = (vel/v_0)-1
         forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        speed_reward = 1-(forward_speed/v_0)
+        speed_reward = torch.exp(1-(forward_speed/v_0))
 
 
-        # pose_target = torch.sub(self.pose_commands, self.pose)
-        # alignment_reward = torch.sum(self.forwards * pose_target, dim=-1, keepdim=True)
+        pose_target = torch.sub(self.pose_commands, self.pose)
+        pose_target_unit = pose_target/torch.linalg.norm(pose_target, dim=1, keepdim=True)
+        forwards_unit = self.forwards/torch.linalg.norm(self.forwards, dim=1, keepdim=True)
+        cross = torch.cross(forwards_unit, pose_target_unit, dim=-1)[:,-1].reshape(-1,1)
+        dot = torch.sum(forwards_unit * pose_target_unit, dim=-1, keepdim=True)
+        alignment_reward = dot
 
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
@@ -247,11 +251,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         roll  = euler[0] #pull the real-time roll angle from the euler tensor
         #roll_deg = torch.abs(roll * (360 / (2*math.pi))) #convert the roll angle above to degrees
         roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
+        roll_crit_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
 
         pitch = euler[1]
         #pitch_deg = torch.abs(pitch *(360/ (2*math.pi)))
         pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
-        pitch_0 = 20
+        pitch_0 = 5.0
 
         roll_reward = 1-(roll_deg/roll_0)
         pitch_reward = 1-(pitch_deg/pitch_0)
@@ -264,20 +269,39 @@ class XrlIsaaclabEnv(DirectRLEnv):
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
         dist = torch.pow((torch.pow(x_dif,2) + torch.pow(y_dif,2)),0.5).reshape(-1,1)
-        d_0 = 5.0
+        d_0 = 0.5
         distance_reward = 1-(dist/d_0) #minimize the distance from agent to target
 
         #total_reward = vel*torch.exp(alignment_reward) + distance_reward
-        total_reward = 1.0*forward_speed + 1.0*distance_reward + 1.0*roll_reward + 0.5*pitch_reward
+        total_reward = 1.0*distance_reward + 0.75*roll_reward + 0.75*pitch_reward + 0.5*alignment_reward
         #print(f'roll:{roll_deg[0]} critical:{roll_0[0]} reward:{roll_reward[0]}')
         #print(f'pitch:{pitch_deg[0]} threshold:{pitch_0} reward:{pitch_reward[0]}')
-        #print(f'speed:{forward_speed[0]} distance:{distance_reward[0]} roll:{roll_reward[0]} pitch:{pitch_reward[0]} total:{total_reward[0]}')
+        #print(f'speed:{(torch.exp(forward_speed))[0]} distance:{(distance_reward)[0]} roll:{roll_reward[0]} pitch:{(pitch_reward)[0]} alignment:{(torch.exp(alignment_reward))[0]} total:{total_reward[0]}')
+        print(total_reward[0])
         return total_reward
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
+        com_z = self.robot.data.root_com_pos_w[:, 2]
+        h = torch.clamp(com_z - self.ground_z, min=1e-3)
+        track_width = 0.3765
+        track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
 
-        return False, time_out
+        roll_crit = torch.atan2(2.0*h, track_width_t)
+        roll  = euler[0]
+        roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
+        roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
+        pitch_crit = 5.0
+        pitch = euler[1]
+        pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
+
+        R_crit = roll_deg.abs() >= roll_crit_deg
+        P_crit = pitch_deg.abs() >= pitch_crit
+        terminated = R_crit | P_crit
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+        return terminated, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:

@@ -20,10 +20,10 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # env
     #seed = 5
     decimation = 2
-    episode_length_s = 45.0
+    episode_length_s = 180.0
     # - spaces definition
     action_space = 4
-    observation_space = 4 #roll, pitch, distance, and forward velocity
+    observation_space = 6 #roll, pitch, distance, forward velocity, rientation dot product, and orientation cross product
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)

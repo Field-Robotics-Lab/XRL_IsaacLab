@@ -183,6 +183,94 @@ Modify the resulting walkthrough enviornment to teach the specified robot to dri
 
 Modify end_to_end environment with procedually generated terrain using the rough.py method provided with the basic enviornment setup.
 
+1.  Under _setup_scene, call the TerrainImporterCFG using the ROUGH_TERRAIN_CFG as the generator.  ROUGH_TERRAIN_CFG is a built in class found in the rough.py file under environments in the IsaacLab source code.  ROUGH_TERRAIN_CFG provides various terrain methods such as stair step, pyramid, and random rough.
+
+...
+
+    # Terrain importer configuration
+        terrain_importer_cfg = TerrainImporterCfg(
+            prim_path="/World/Terrain",
+            terrain_type="generator",
+            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
+            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4
+        )
+
+        # Instantiate importer
+        terrain_importer_cfg.class_type(terrain_importer_cfg)
+
+...
+
+2.  Update ROUGH_TERRAIN_CFG in rough.py by zeroing out the percentage for the all other terrain methods besides random_rough.  random_rough uses Simplex Noise and converts them to a usable height field using trimesh.  For this functionality, noise range is set from -0.15 to 0.15, noise step is set to .005, downsampled scale is set 0.6, and the border width is set to 0.1 to create an environment with seemingly rolling hills.  Additionally, the environment is set to 1x1 to avoid unecessary edges within the environment and the environment size is set to 30x30.
+
+...
+
+    ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
+        size=(20.0, 20.0),
+        border_width=20.0,
+        num_rows=1,
+        num_cols=1,
+        horizontal_scale=0.1,
+        vertical_scale=0.005,
+        slope_threshold=0.75,
+        use_cache=False,
+        sub_terrains={
+            "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion=0.0,
+                step_height_range=(0.05, 0.23),
+                step_width=0.3,
+                platform_width=3.0,
+                border_width=1.0,
+                holes=False,
+            ),
+            "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.0,
+                step_height_range=(0.05, 0.23),
+                step_width=0.3,
+                platform_width=3.0,
+                border_width=1.0,
+                holes=False,
+            ),
+            "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+                proportion=0.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+            ),
+            "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+                proportion=1.0, noise_range=(-0.15, 0.15), noise_step=0.005, downsampled_scale=0.6, border_width=0.1
+            ),
+            "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+                proportion=0.0, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+            ),
+            "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+                proportion=0.0, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+            ),
+        },
+    )
+    """Rough terrains configuration."""
+
+...
+
+3.  Update the robot to the jackal using the above instructions.
+
+4.  Optional: Add in flat spawn patches using the CuboidCFG below and giving it collision properties to give the robots and flat landing spot and keep them from flipping upon spawning.
+
+...
+
+    # 3) Flat spawn patches
+    flat_patch_cfg = sim_utils.CuboidCfg(
+        size=(0.5, 0.5, 0.025),  # Lx, Ly, thickness
+        collision_props=sim_utils.CollisionPropertiesCfg()
+        # visual_material=sim_utils.PreviewSurfaceCfg(
+        #     diffuse_color=(0.1, 0.8, 0.1)  # optional: make it green so you can see it
+        # ),
+    )
+    flat_patch_cfg.func(
+        "/World/envs/env_.*/flat_spawn",
+        flat_patch_cfg,
+        translation=(0.0, 0.0, 0.0125),      # ≈ thickness/2
+        orientation=(1.0, 0.0, 0.0, 0.0),
+    )
+
+...
+
 ### update_reward
 
 Changed the reward structure from that provided in the walkthrough tutorial to include forward velocity, roll, pitch, distance, and alignment signals.

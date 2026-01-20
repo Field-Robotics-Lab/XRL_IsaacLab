@@ -44,11 +44,6 @@ def define_markers() -> VisualizationMarkers:
                     scale=(0.25, 0.25, 0.5),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                 ),
-                # "command": sim_utils.UsdFileCfg(
-                #     usd_path=x_arrow_path,
-                #     scale=(0.25, 0.25, 0.5),
-                #     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-                # ),
                 "target": sim_utils.UsdFileCfg(
                     usd_path=disk_path,
                     scale=(0.25, 0.25, 0.5),
@@ -64,6 +59,13 @@ class XrlIsaaclabEnv(DirectRLEnv):
     def __init__(self, cfg: XrlIsaaclabEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        N = self.cfg.scene.num_envs
+        device = self.device
+        self._prev_dist = torch.full((N,), float("inf"), device=device)
+        self._stuck_count = torch.zeros((N,), dtype=torch.int32, device=device)
+        self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -86,7 +88,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        # flat spawn patches
+        #flat spawn patches
         # flat_patch_cfg = sim_utils.CuboidCfg(
         #     size=(0.5, 0.5, 0.0125),  # Lx, Ly, thickness
         #     collision_props=sim_utils.CollisionPropertiesCfg()
@@ -190,11 +192,9 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
         roll  = euler[0] #pull the real-time roll angle from the euler tensor
-        #roll_deg = torch.abs(roll * (360 / (2*math.pi)))[0]
         roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1) #convert the roll angle above to degrees
 
         pitch = euler[1]
-        #pitch_deg = torch.abs(pitch *(360/ (2*math.pi)))[0]
         pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # Get the ray sensor (use ONE handle consistently)
@@ -230,7 +230,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         v_0 = 2.0
         #velocity_reward = (vel/v_0)-1
         forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        speed_reward = torch.exp(1-(forward_speed/v_0))
+        speed_reward = 1-(forward_speed/v_0)
 
 
         pose_target = torch.sub(self.pose_commands, self.pose)
@@ -239,6 +239,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         cross = torch.cross(forwards_unit, pose_target_unit, dim=-1)[:,-1].reshape(-1,1)
         dot = torch.sum(forwards_unit * pose_target_unit, dim=-1, keepdim=True)
         alignment_reward = dot
+        #alignment_reward = 1/(1+torch.exp(-a))
 
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
@@ -246,20 +247,26 @@ class XrlIsaaclabEnv(DirectRLEnv):
         h = torch.clamp(com_z - self.ground_z, min=1e-3)
         track_width = 0.3765
         track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
+        wheel_base = 0.430
+        wheel_base_t = torch.full_like(h, wheel_base)
+
         roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
-        roll_0 = (0.8 * roll_crit) * (360 / (2*math.pi)) #set the threshold angle for the reward to 80% of the critical roll angle
         roll  = euler[0] #pull the real-time roll angle from the euler tensor
-        #roll_deg = torch.abs(roll * (360 / (2*math.pi))) #convert the roll angle above to degrees
         roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
-        roll_crit_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
+        roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
+        roll_0 = 0.8 * roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
 
+
+        pitch_crit = torch.atan2(2.0*h, wheel_base_t)
         pitch = euler[1]
-        #pitch_deg = torch.abs(pitch *(360/ (2*math.pi)))
         pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
-        pitch_0 = 5.0
+        pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
+        pitch_0 = 0.4 * pitch_crit_deg
 
-        roll_reward = 1-(roll_deg/roll_0)
-        pitch_reward = 1-(pitch_deg/pitch_0)
+        r = 1-(roll_deg/roll_0)
+        roll_reward = 1/(1+torch.exp(-r))
+        p = 1-(pitch_deg/pitch_0)
+        pitch_reward = 1/(1+torch.exp(-p))
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         x_pose = self.pose[:,0] #column vector for all current x positions
@@ -271,11 +278,9 @@ class XrlIsaaclabEnv(DirectRLEnv):
         dist = torch.pow((torch.pow(x_dif,2) + torch.pow(y_dif,2)),0.5).reshape(-1,1)
         d_0 = 0.5
         distance_reward = 1-(dist/d_0) #minimize the distance from agent to target
+        #distance_reward = 2*(1/(1+torch.exp(-d)))-1 #apply hyperbolic tangemt to d to normalize distance reward between -1 and 1
 
-        #total_reward = vel*torch.exp(alignment_reward) + distance_reward
-        total_reward = 1.0*distance_reward + 0.75*roll_reward + 0.75*pitch_reward + 0.5*alignment_reward
-        #print(f'roll:{roll_deg[0]} critical:{roll_0[0]} reward:{roll_reward[0]}')
-        #print(f'pitch:{pitch_deg[0]} threshold:{pitch_0} reward:{pitch_reward[0]}')
+        total_reward = -3.0*dist + 0.25*roll_reward + 0.25*pitch_reward + 0.75*alignment_reward + 0.50*forward_speed #Previous scaling: -2.5, 0.5, 0.5, 0.75, 0.50
         #print(f'speed:{(torch.exp(forward_speed))[0]} distance:{(distance_reward)[0]} roll:{roll_reward[0]} pitch:{(pitch_reward)[0]} alignment:{(torch.exp(alignment_reward))[0]} total:{total_reward[0]}')
         print(total_reward[0])
         return total_reward
@@ -283,23 +288,64 @@ class XrlIsaaclabEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        #calulate parameters for determining roll and pitch angles; same as in _get_rewards
         euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
         com_z = self.robot.data.root_com_pos_w[:, 2]
         h = torch.clamp(com_z - self.ground_z, min=1e-3)
         track_width = 0.3765
         track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
+        wheel_base = 0.430
+        wheel_base_t = torch.full_like(h, wheel_base)
 
-        roll_crit = torch.atan2(2.0*h, track_width_t)
-        roll  = euler[0]
+        #Calculate Distance to target; same as in _get_rewards
+        x_pose = self.pose[:,0] #column vector for all current x positions
+        x_commands = self.pose_commands[:,0] #column vector for all x commands
+        y_pose = self.pose[:,1] #column vector for all current y positions
+        y_commands = self.pose_commands[:,1] #column vector for all x commands
+        x_dif = torch.sub(x_commands,x_pose)
+        y_dif = torch.sub(y_commands,y_pose)
+        dist = torch.pow((torch.pow(x_dif,2) + torch.pow(y_dif,2)),0.5).reshape(-1,1)
+
+        #calulate roll and critical roll angles; same as _get_rewards
+        roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
+        roll  = euler[0] #pull the real-time roll angle from the euler tensor
         roll_deg = torch.rad2deg(roll).abs().unsqueeze(-1)
         roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
-        pitch_crit = 5.0
+
+        #calulate pitch and critical pitch angles; same as _get_rewards
+        pitch_crit = torch.atan2(2.0*h, wheel_base_t)
         pitch = euler[1]
         pitch_deg = torch.rad2deg(pitch).abs().unsqueeze(-1)
+        pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
 
-        R_crit = roll_deg.abs() >= roll_crit_deg
-        P_crit = pitch_deg.abs() >= pitch_crit
-        terminated = R_crit | P_crit
+        #calculate necessary data to determine if the vehicle is  stuck
+        no_change = 0.00005 * self._prev_dist #threshold to determine if there is no change from the previous timestep
+        steps_required = 30 # X consecutive timesteps
+        delta = (dist - self._prev_dist).abs()
+        not_moving = delta < no_change
+
+        # min_speed_gate = 0.05 #recomended by ChatGPT to keep the vehicle from being punished for standing still on purpose
+        # cmd_xy = self.pose_commands[:, :2].norm(dim=-1)  # (N,)
+        # not_moving = not_moving & (cmd_xy > min_speed_gate)
+
+        #update counters
+        self._stuck_count = torch.where(
+            not_moving,
+            self._stuck_count + 1,
+            torch.zeros_like(self._stuck_count),
+        )
+        self._is_stuck = self._stuck_count >= steps_required
+        self._prev_dist = dist #update cached values for previous distance
+
+        pose_target = torch.sub(self.pose_commands, self.pose)
+        pose_target_unit = pose_target/torch.linalg.norm(pose_target, dim=1, keepdim=True)
+        forwards_unit = self.forwards/torch.linalg.norm(self.forwards, dim=1, keepdim=True)
+        dot = torch.sum(forwards_unit * pose_target_unit, dim=-1, keepdim=True)
+
+        R_crit = roll_deg.abs() >= 0.8*roll_crit_deg
+        P_crit = pitch_deg.abs() >= 0.8*pitch_crit_deg
+        A_crit = dot < 0
+        terminated = R_crit | P_crit | self._is_stuck | A_crit
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return terminated, time_out
 
@@ -307,6 +353,13 @@ class XrlIsaaclabEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
+
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        #reset the environment buffers for determining if the robot is stuck
+        self._prev_dist[env_ids] = float("inf")
+        self._stuck_count[env_ids] = 0
+        self._is_stuck[env_ids] = False
+        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         # pick new commands for reset envs
         self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda() + 5

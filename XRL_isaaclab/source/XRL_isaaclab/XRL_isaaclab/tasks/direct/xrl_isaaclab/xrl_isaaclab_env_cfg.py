@@ -7,6 +7,7 @@ from XRL_isaaclab.robots.jackal_basic import JACKAL_BASIC_CONFIG
 
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.envs.common import ViewerCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
@@ -23,7 +24,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 180.0
     # - spaces definition
     action_space = 4
-    observation_space = 6 #roll, pitch, distance, forward velocity, rientation dot product, and orientation cross product
+    observation_space = 5 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -37,8 +38,16 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     )
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
-    dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
     ################################################################## v
+    # # viewer
+    # viewer: ViewerCfg = ViewerCfg(
+    #     origin_type="asset_root",
+    #     asset_name="robot",
+    #     env_index=0,
+    #     eye=(3.0, 3.0, 2.0),
+    #     lookat=(0.0, 0.0, 0.5),
+    # )
+    dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
     # ray sensor
     ground_ray = RayCasterCfg(
         prim_path="/World/envs/env_.*/Robot",

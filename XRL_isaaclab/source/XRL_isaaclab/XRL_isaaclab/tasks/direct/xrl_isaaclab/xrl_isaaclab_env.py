@@ -94,20 +94,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        #flat spawn patches
-        # flat_patch_cfg = sim_utils.CuboidCfg(
-        #     size=(0.5, 0.5, 0.0125),  # Lx, Ly, thickness
-        #     collision_props=sim_utils.CollisionPropertiesCfg()
-        #     # visual_material=sim_utils.PreviewSurfaceCfg(
-        #     #     diffuse_color=(0.1, 0.8, 0.1)  # optional: make it green so you can see it
-        #     # ),
-        # )
-        # flat_patch_cfg.func(
-        #     "/World/envs/env_.*/flat_spawn",
-        #     flat_patch_cfg,
-        #     translation=(0.0, 0.0, 0.00625),      # ≈ thickness/2
-        #     orientation=(1.0, 0.0, 0.0, 0.0),
-        # )
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # add raycaster for depth measurments
         self.ground_ray = RayCaster(self.cfg.ground_ray)
@@ -123,7 +109,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
         self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
         self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda()#set to 3 to account for the x,y, and z position data
-        #self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
+        self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
         self.pose_commands[:, -1] = 0.0
         self.offsets = self.scene.env_origins[:,:3].clone() #save the individual environment offsets
 
@@ -192,7 +178,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.pose_target[:,-1] = 0.0
 
         self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
-        self.cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
+        cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
+        self.cos_psi = torch.clamp(cos_psi, -1.0, 1.0)
         self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
         self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
@@ -253,19 +240,40 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-        roll_0 = 0.8 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
-        pitch_0 = 0.8 * self.pitch_crit_deg
+        roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
+        pitch_0 = 0.2 * self.pitch_crit_deg
         r = 1-(self.roll_deg/roll_0)
-        roll_reward = 1/(1+torch.exp(-r))
+        roll_sig = 1/(1+torch.exp(-r))
         p = 1-(self.pitch_deg/pitch_0)
-        pitch_reward = 1/(1+torch.exp(-p))
+        pitch_sig = 1/(1+torch.exp(-p))
+
+        not_rolling = self.roll_deg < roll_0
+        roll_reward = torch.where(
+            not_rolling,
+            #roll_sig,
+            torch.zeros_like(roll_sig),
+            -1*roll_sig
+        )
+
+        not_pitching = self.pitch_deg < pitch_0
+        pitch_reward = torch.where(
+            not_pitching,
+            #pitch_sig,
+            torch.zeros_like(pitch_sig),
+            -1*pitch_sig
+        )
 
         dist_delta = (self._prev_dist - self.dist)
-        is_closer = dist_delta > 0.0005
-        distance_reward = torch.where(
+        is_closer = dist_delta > 0
+        distance_reward = torch.zeros_like(self.dist)
+        distance_reward += torch.where(
             is_closer,
-            dist_delta,
-            torch.zeros_like(self.dist)
+            torch.full((self.cfg.scene.num_envs,1), 1, device=self.device),
+            torch.where(
+                dist_delta < 3,
+                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device),
+                torch.zeros_like(self.dist)
+            )
         )
         self._prev_dist = self.dist.detach()
 
@@ -273,22 +281,48 @@ class XrlIsaaclabEnv(DirectRLEnv):
         psi_target_deg = torch.rad2deg(psi_target).abs()
         is_aligned = psi_target_deg < 45
         align_sig = 1/(1+torch.exp(-self.cos_psi))
+        a = torch.full((self.cfg.scene.num_envs,1), 1, device=self.device)
         alignment_reward = torch.where(
             is_aligned,
-            align_sig,
-            torch.zeros_like(self.dot)
+            a,
+            #torch.zeros_like(self.dot)
+            torch.where(
+                psi_target_deg > 90,
+                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device),
+                torch.zeros_like(psi_target_deg)
+            )
         )
 
-        is_moving = (self.forward_speed > 0) & is_aligned
-        speed_sig = 1/(1+torch.exp(-self.forward_speed))
+        is_moving = self.forward_speed > 0 and is_aligned
+        #speed_sig = 1/(1+torch.exp(-self.forward_speed))
+        speed_sig = torch.full((self.cfg.scene.num_envs,1), -3, device=self.device)
         speed_reward = torch.where(
             is_moving,
-            speed_sig,
-            torch.zeros_like(self.forward_speed)
+            #speed_sig,
+            torch.full((self.cfg.scene.num_envs,1), 1, device=self.device),
+            torch.where(
+                self.forward_speed == 0 and is_aligned,
+                torch.zeros_like(self.forward_speed),
+                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device)
+            )
         )
 
-        total_reward = 100*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 4.0*alignment_reward + 4.0*speed_reward
-        #print(f'D:{1.0*distance_reward[0][0]}  R:{1.0*roll_reward[0][0]}  P:{1.0*pitch_reward[0][0]}  A:{1.0*alignment_reward[0][0]}  S:{1.0*speed_reward[0][0]} Tot:{total_reward[0][0]}')
+        dist_0 = 1.0
+        self.success = self.dist <= dist_0
+        success_sig = torch.full((self.cfg.scene.num_envs,1), 500, device=self.device)
+        success_reward = torch.where(
+            self.success,
+            success_sig,
+            #torch.zeros_like(self.forward_speed)
+            torch.zeros_like(self.dist)
+        )
+
+
+        total_reward = 2.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*speed_reward + 1.0*success_reward
+        #total_reward = 3.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*success_reward
+        print(f'D:{1.0*distance_reward[0][0]}  R:{1.0*roll_reward[0][0]}  P:{1.0*pitch_reward[0][0]}  A:{1.0*alignment_reward[0][0]}  S:{1.0*speed_reward[0][0]} Tot:{total_reward[0][0]}')
+        #print(f'Dist:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
+        #print(self.roll_crit_deg)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward
 
@@ -301,7 +335,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #calculate necessary data to determine if the vehicle is  stuck
         no_change = 0.0005
         #no_change = 1e-2 #threshold to determine if there is no change from the previous timestep.  currently set to 1mm
-        steps_required = 100 # X consecutive timesteps
+        steps_required = 500 # X consecutive timesteps
         delta = (self._prev_dist - self.dist).abs().squeeze(-1)
         not_moving = delta < no_change
 
@@ -309,13 +343,13 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._stuck_count = torch.where(not_moving, self._stuck_count + 1, torch.zeros_like(self._stuck_count))
         self._is_stuck = self._stuck_count >= steps_required
 
-        R_crit = self.roll_deg.abs() >= 0.99*self.roll_crit_deg
+        R_crit = self.roll_deg.abs() >= 0.7*self.roll_crit_deg
         R_crit = R_crit.squeeze(-1)
-        P_crit = self.pitch_deg.abs() >= 0.99*self.pitch_crit_deg
+        P_crit = self.pitch_deg.abs() >= 0.7*self.pitch_crit_deg
         P_crit = P_crit.squeeze(-1)
         A_crit = self.cos_psi > 50
         A_crit = A_crit.squeeze(-1)
-        terminated = R_crit | P_crit #| self._is_stuck | A_crit
+        terminated = R_crit | P_crit | A_crit | self._is_stuck
 
         terminated = terminated.to(torch.bool).reshape(N)
         time_out  = time_out.to(torch.bool).reshape(N)
@@ -387,15 +421,15 @@ class XrlIsaaclabEnv(DirectRLEnv):
             fp_root_state[:, 2] += 0.25  # put it above ground a bit (don’t trust patch_local[2])
             # Spawn target near the flat patch (world coords)
             new_cmds = torch.randn((env_ids.numel(), 3), device=self.device)
-            new_cmds[:, :2] = 2.0 * new_cmds[:, :2]  # +/- ~2m in XY
+            new_cmds[:, :2] = 3.0 * new_cmds[:, :2]  # +/- ~2m in XY
             new_cmds[:, 2] = 0.0
             new_cmds[:, :2] += fp_root_state[:, :2]
             self.pose_commands[env_ids] = new_cmds
             self.robot.write_root_state_to_sim(fp_root_state, env_ids)
         else:
             # Fallback: keep target near env origin
-            new_cmds = torch.randn((env_ids.numel(), 3), device=self.device)
-            new_cmds[:, :2] = 2.0 * new_cmds[:, :2]
+            new_cmds = torch.randn((env_ids.numel(), 3), device=self.device) + 3
+            new_cmds[:, :2] = 3.0 * new_cmds[:, :2]
             new_cmds[:, 2] = 0.0
             new_cmds[:, :2] += self.scene.env_origins[env_ids, :2]
             self.pose_commands[env_ids] = new_cmds

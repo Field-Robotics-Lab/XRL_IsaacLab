@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """
-Script to play a checkpoint of an RL agent from skrl.
+Script to train RL agent with skrl.
 
 Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
 a more user-friendly way.
@@ -17,22 +17,21 @@ import sys
 
 from isaaclab.app import AppLauncher
 
+import inspect
+
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from skrl.")
+parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument(
-    "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
-)
+parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
-    "--use_pretrained_checkpoint",
-    action="store_true",
-    help="Use the pre-trained checkpoint from Nucleus.",
+    "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
+parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
     "--ml_framework",
     type=str,
@@ -47,7 +46,6 @@ parser.add_argument(
     choices=["AMP", "PPO", "IPPO", "MAPPO"],
     help="The RL algorithm used for training the skrl agent.",
 )
-parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -59,6 +57,7 @@ if args_cli.video:
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
+
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -68,8 +67,7 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import os
 import random
-import time
-import torch
+from datetime import datetime
 
 import skrl
 from packaging import version
@@ -96,13 +94,13 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
+from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+from isaaclab.utils.io import dump_pickle, dump_yaml
 
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import XRL_isaaclab.tasks  # noqa: F401
@@ -113,46 +111,56 @@ agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"sk
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, experiment_cfg: dict):
-    """Play with skrl agent."""
-    # grab task name for checkpoint path
-    task_name = args_cli.task.split(":")[-1]
-    train_task_name = task_name.replace("-Play", "")
-
+def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
+    """Train with skrl agent."""
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    # multi-gpu training config
+    if args_cli.distributed:
+        env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
+    # max iterations for training
+    if args_cli.max_iterations:
+        agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
+    agent_cfg["trainer"]["close_environment_at_exit"] = False
     # configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
 
-        # randomly sample a seed if seed = -1
+    # randomly sample a seed if seed = -1
     if args_cli.seed == -1:
         args_cli.seed = random.randint(0, 10000)
 
     # set the agent and environment seed from command line
     # note: certain randomization occur in the environment initialization so we set the seed here
-    experiment_cfg["seed"] = args_cli.seed if args_cli.seed is not None else experiment_cfg["seed"]
-    env_cfg.seed = experiment_cfg["seed"]
+    agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
+    env_cfg.seed = agent_cfg["seed"]
 
-    # specify directory for logging experiments (load checkpoint)
-    log_root_path = os.path.join("logs", "skrl", experiment_cfg["agent"]["experiment"]["directory"])
+    # specify directory for logging experiments
+    log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
     log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    # get checkpoint path
-    if args_cli.use_pretrained_checkpoint:
-        resume_path = get_published_pretrained_checkpoint("skrl", train_task_name)
-        if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
-            return
-    elif args_cli.checkpoint:
-        resume_path = os.path.abspath(args_cli.checkpoint)
-    else:
-        resume_path = get_checkpoint_path(
-            log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
-        )
-    log_dir = os.path.dirname(os.path.dirname(resume_path))
+    print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    # specify directory for logging runs: {time-stamp}_{run_name}
+    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
+    # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
+    print(f"Exact experiment name requested from command line: {log_dir}")
+    if agent_cfg["agent"]["experiment"]["experiment_name"]:
+        log_dir += f'_{agent_cfg["agent"]["experiment"]["experiment_name"]}'
+    # set directory into agent config
+    agent_cfg["agent"]["experiment"]["directory"] = log_root_path
+    agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
+    # update log_dir
+    log_dir = os.path.join(log_root_path, log_dir)
+
+    # dump the configuration into log-directory
+    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
+    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+
+    # get checkpoint path (to resume training)
+    resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -161,17 +169,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:
         env = multi_agent_to_single_agent(env)
 
-    # get environment (step) dt for real-time evaluation
-    try:
-        dt = env.step_dt
-    except AttributeError:
-        dt = env.unwrapped.step_dt
-
     # wrap for video recording
     if args_cli.video:
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
-            "step_trigger": lambda step: step == 0,
+            "video_folder": os.path.join(log_dir, "videos", "train"),
+            "step_trigger": lambda step: step % args_cli.video_interval == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
         }
@@ -184,45 +186,53 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
 
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
-    experiment_cfg["trainer"]["close_environment_at_exit"] = False
-    experiment_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
-    experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
-    runner = Runner(env, experiment_cfg)
+    runner = Runner(env, agent_cfg)
 
-    print(f"[INFO] Loading model checkpoint from: {resume_path}")
-    runner.agent.load(resume_path)
-    # set agent to evaluation mode
-    runner.agent.set_running_mode("eval")
+    # load checkpoint (if specified)
+    if resume_path:
+        print(f"[INFO] Loading model checkpoint from: {resume_path}")
+        runner.agent.load(resume_path)
 
-    # reset environment
-    obs, _ = env.reset()
-    timestep = 0
-    # simulate environment
-    while simulation_app.is_running():
-        start_time = time.time()
+    agent = runner.agent
 
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            outputs = runner.agent.act(obs, timestep=0, timesteps=0)
-            # - multi-agent (deterministic) actions
-            if hasattr(env, "possible_agents"):
-                actions = {a: outputs[-1][a].get("mean_actions", outputs[0][a]) for a in env.possible_agents}
-            # - single-agent (deterministic) actions
-            else:
-                actions = outputs[-1].get("mean_actions", outputs[0])
-            # env stepping
-            obs, _, _, _, _ = env.step(actions)
-        if args_cli.video:
-            timestep += 1
-            # exit the play loop after recording one video
-            if timestep == args_cli.video_length:
+    agents_scope = [(0, env.num_envs)]  # one agent handles all envs
+    trainer = StepTrainer(env,agent,agents_scope=agents_scope,cfg=agent_cfg["trainer"])
+
+
+    # run training
+    timesteps = agent_cfg["trainer"]["timesteps"]
+
+    window = 300
+    tgt_avg = 450
+    episode_returns = []
+    min_episodes = timesteps/10
+
+    for i in range(timesteps):
+
+        if isinstance(trainer.agents, list):
+            trainer.agents = trainer.agents[0]
+
+        next_states, rewards, terminated, truncated, infos = trainer.train()
+        
+        # if "episode" in infos:
+        #     ep_info = infos["episode"]
+        #     if "reward" in ep_info:
+        # vals = rewards[0][0]
+        # print(vals)
+        episode_returns.extend(rewards)
+
+        if i % min_episodes == 0:
+            agent.save(os.path.join(log_dir, "checkpoints", f"checkpoint_{i}.pt"))
+
+        if len(episode_returns) > min_episodes:
+            #if len(episode_returns) >= window:
+            avg = sum(episode_returns[-window:])/window
+            #print(avg)
+            if avg >= tgt_avg:
+                print(f"[INFO] Early Stop; avg_reward = {avg}")
                 break
-
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
+        else:
+            continue
 
     # close the simulator
     env.close()

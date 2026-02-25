@@ -1,0 +1,84 @@
+seed: 42
+
+# Models are instantiated using skrl's model instantiator utility
+# https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
+models:
+  separate: True
+
+  # Q(s, a): outputs one value per discrete action
+  q_network:
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: net
+        input: STATES
+        layers: [256, 256]
+        activations: relu
+        output: ACTIONS
+
+  # Target Q(s, a): same architecture
+  target_q_network:
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: net
+        input: STATES
+        layers: [256, 256]
+        activations: relu
+        output: ACTIONS
+
+# Replay memory (DQN uses replay buffer)
+# https://skrl.readthedocs.io/en/latest/api/memories/random.html
+memory:
+  class: RandomMemory
+  # For off-policy methods you usually want a finite replay size
+  memory_size: 100000
+
+# DQN agent configuration (field names from DQN_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/dqn.html
+agent:
+  class: DQN
+
+  gradient_steps: 1
+  batch_size: 256
+
+  discount_factor: 0.99
+  polyak: 0.005
+
+  learning_rate: 1.0e-3
+  learning_rate_scheduler: null
+  learning_rate_scheduler_kwargs: {}
+
+  state_preprocessor: null
+  state_preprocessor_kwargs: {}
+
+  # Typical off-policy pattern: random fill + delayed learning start
+  random_timesteps: 10000
+  learning_starts: 10000
+
+  update_interval: 1
+  target_update_interval: 1000
+
+  exploration:
+    initial_epsilon: 1.0
+    final_epsilon: 0.05
+    timesteps: 200000
+
+  rewards_shaper: null
+  mixed_precision: False
+
+  experiment:
+    directory: "your_task_dqn"
+    experiment_name: ""
+    write_interval: auto
+    checkpoint_interval: auto
+    store_separately: False
+    wandb: False
+    wandb_kwargs: {}
+
+# Trainer
+# https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
+trainer:
+  class: SequentialTrainer
+  timesteps: 500000
+  environment_info: log

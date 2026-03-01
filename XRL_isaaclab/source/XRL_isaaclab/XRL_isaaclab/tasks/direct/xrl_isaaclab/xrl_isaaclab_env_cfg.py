@@ -23,7 +23,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 180.0
     # - spaces definition
-    action_space = 4
+    action_space = 2
     observation_space = 5 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
     state_space = 0
     # simulation

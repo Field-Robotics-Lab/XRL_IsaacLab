@@ -202,7 +202,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     timesteps = agent_cfg["trainer"]["timesteps"]
 
-    window = 300
+    window = 500
     tgt_avg = 450
     episode_returns = []
     min_episodes = timesteps/10

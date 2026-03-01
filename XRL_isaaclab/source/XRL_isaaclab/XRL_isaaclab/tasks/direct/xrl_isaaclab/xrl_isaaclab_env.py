@@ -64,7 +64,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
     def __init__(self, cfg: XrlIsaaclabEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         N = self.cfg.scene.num_envs
         device = self.device
         #self._prev_dist = torch.full((N,), float("inf"), device=device)
@@ -72,7 +71,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._prev_dist = torch.zeros((N, 1), device=device)
         self._stuck_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -94,11 +92,10 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # add raycaster for depth measurments
         self.ground_ray = RayCaster(self.cfg.ground_ray)
         self.scene.sensors["ground_ray"] = self.ground_ray
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -164,11 +161,24 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.actions = actions.clone()
         self._visualize_markers()
 
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
+        self.dist_0 = 1.0
+        left = self.actions[:,0:1]
+        right = self.actions[:,1:2]
+        expanded = torch.cat([left, right, left, right], dim=1)
+        zero_expanded = torch.zeros_like(expanded)
+        target_vel = torch.where(
+            self.dist <= self.dist_0,
+            zero_expanded,
+            expanded
+        )
+        self.robot.set_joint_velocity_target(target_vel, joint_ids=self.dof_idx)
+        
+        
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
     def _get_observations(self) -> dict:
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
         self.forwards_unit = self.forwards/torch.linalg.norm(self.forwards, dim=1, keepdim=True)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
@@ -176,13 +186,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.pose_target_unit = self.pose_target/torch.linalg.norm(self.pose_target, dim=1, keepdim=True)
         self.forwards[:,-1] = 0.0
         self.pose_target[:,-1] = 0.0
-
-        self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
-        cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
-        self.cos_psi = torch.clamp(cos_psi, -1.0, 1.0)
-        self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
-        self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-
 
         x_pose = self.pose[:,0] #column vector for all current x positions
         x_commands = self.pose_commands[:,0] #column vector for all x commands
@@ -192,6 +195,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         y_dif = torch.sub(y_commands,y_pose)
         self.dist = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1, 1)
 
+        self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
+        cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
+        self.cos_psi = torch.clamp(cos_psi, -1.0, 1.0)
+        self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
+        self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
         self.euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
         self.roll  = self.euler[0] #pull the real-time roll angle from the euler tensor
@@ -232,14 +240,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
         pitch_crit = torch.atan2(2.0*h, wheel_base_t)
         self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         obs = torch.hstack((self.forward_speed, self.cos_psi, self.dist, self.roll_deg, self.pitch_deg))
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
         pitch_0 = 0.2 * self.pitch_crit_deg
         r = 1-(self.roll_deg/roll_0)
@@ -307,8 +313,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
             )
         )
 
-        dist_0 = 1.0
-        self.success = self.dist <= dist_0
+        #dist_0 = 1.0
+        self.success = self.dist <= self.dist_0
         success_sig = torch.full((self.cfg.scene.num_envs,1), 500, device=self.device)
         success_reward = torch.where(
             self.success,
@@ -318,18 +324,16 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
 
 
-        total_reward = 2.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*speed_reward + 1.0*success_reward
-        #total_reward = 3.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*success_reward
+        total_reward = 1.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*speed_reward + 1.0*success_reward
+        #total_reward = 1.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*success_reward
         print(f'D:{1.0*distance_reward[0][0]}  R:{1.0*roll_reward[0][0]}  P:{1.0*pitch_reward[0][0]}  A:{1.0*alignment_reward[0][0]}  S:{1.0*speed_reward[0][0]} Tot:{total_reward[0][0]}')
         #print(f'Dist:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         #print(self.roll_crit_deg)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         N = self.num_envs  # or self.cfg.scene.num_envs depending on your class
 
         #calculate necessary data to determine if the vehicle is  stuck
@@ -353,7 +357,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         terminated = terminated.to(torch.bool).reshape(N)
         time_out  = time_out.to(torch.bool).reshape(N)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         return terminated, time_out
 
@@ -362,7 +365,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # pick new commands for reset envs
         if not torch.is_tensor(env_ids):
             env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
@@ -436,4 +438,3 @@ class XrlIsaaclabEnv(DirectRLEnv):
             default_root_state[:, :3] += self.scene.env_origins[env_ids]
             self.robot.write_root_state_to_sim(default_root_state, env_ids)
         self._visualize_markers()
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^

@@ -21,10 +21,14 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     # env
     #seed = 5
     decimation = 2
-    episode_length_s = 180.0
+    episode_length_s = 60.0
     # - spaces definition
     action_space = 2
+<<<<<<< Updated upstream
     observation_space = 5 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
+=======
+    observation_space = 6 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
+>>>>>>> Stashed changes
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -48,21 +52,21 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     #     lookat=(0.0, 0.0, 0.5),
     # )
     dof_names = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
-    # ray sensor
-    ground_ray = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot",
+    # # ray sensor
+    # ground_ray = RayCasterCfg(
+    #     prim_path="/World/envs/env_.*/Robot",
 
-        # THIS is the key line
-        mesh_prim_paths=["/World/Terrain"],
+    #     # THIS is the key line
+    #     mesh_prim_paths=["/World/Terrain"],
 
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.5)),
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.5)),
 
-        pattern_cfg=GridPatternCfg(
-            resolution=0.05,        # bigger than size -> ~1 sample
-            size=(0.01, 0.01),      # tiny footprint
-            direction=(0.0, 0.0, -1.0),
-        ),
-        max_distance=5.0,
-        ray_alignment="world",
-    )
+    #     pattern_cfg=GridPatternCfg(
+    #         resolution=0.05,        # bigger than size -> ~1 sample
+    #         size=(0.01, 0.01),      # tiny footprint
+    #         direction=(0.0, 0.0, -1.0),
+    #     ),
+    #     max_distance=5.0,
+    #     ray_alignment="world",
+    # )
     ################################################################## ^

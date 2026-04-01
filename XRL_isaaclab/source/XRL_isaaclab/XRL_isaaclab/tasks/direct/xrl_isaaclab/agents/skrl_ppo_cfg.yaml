@@ -43,7 +43,7 @@ agent:
   rollouts: 32
   learning_epochs: 8
   mini_batches: 8
-  discount_factor: 0.99
+  discount_factor: 0.9
   lambda: 0.95
   learning_rate: 5.0e-04
   learning_rate_scheduler: KLAdaptiveLR

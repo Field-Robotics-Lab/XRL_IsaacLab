@@ -24,11 +24,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 60.0
     # - spaces definition
     action_space = 2
-<<<<<<< Updated upstream
-    observation_space = 5 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
-=======
     observation_space = 6 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
->>>>>>> Stashed changes
     state_space = 0
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)

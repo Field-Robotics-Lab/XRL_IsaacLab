@@ -94,18 +94,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-<<<<<<< Updated upstream
-        # add raycaster for depth measurments
-        self.ground_ray = RayCaster(self.cfg.ground_ray)
-        self.scene.sensors["ground_ray"] = self.ground_ray
-
-=======
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # # add raycaster for depth measurments
         # self.ground_ray = RayCaster(self.cfg.ground_ray)
         # self.scene.sensors["ground_ray"] = self.ground_ray
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
->>>>>>> Stashed changes
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -186,13 +179,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
             expanded
         )
         self.robot.set_joint_velocity_target(target_vel, joint_ids=self.dof_idx)
-<<<<<<< Updated upstream
-        
-        
-    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
-=======
         #self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
->>>>>>> Stashed changes
 
     def _get_observations(self) -> dict:
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
@@ -207,8 +194,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.pose_target_unit = self.pose_target / denom_targ
         self.pose_target_unit = self.pose_target/torch.linalg.norm(self.pose_target, dim=1, keepdim=True)
 
-<<<<<<< Updated upstream
-=======
         self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
         self.dot_norm = torch.sum(self.forwards_unit * self.pose_target_unit, dim=-1, keepdim=True)
         self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
@@ -217,7 +202,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.forward_speed = self.robot.data.root_com_lin_vel_w[:,0].reshape(-1,1)
 
 
->>>>>>> Stashed changes
         x_pose = self.pose[:,0] #column vector for all current x positions
         x_commands = self.pose_commands[:,0] #column vector for all x commands
         y_pose = self.pose[:,1] #column vector for all current y positions
@@ -261,18 +245,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         # self.ground_z = ground_z
 
-<<<<<<< Updated upstream
-        com_z = self.robot.data.root_com_pos_w[:, 2]
-        h = torch.clamp(com_z - self.ground_z, min=1e-3)
-        track_width = 0.3765
-        track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
-        wheel_base = 0.430
-        wheel_base_t = torch.full_like(h, wheel_base)
-        roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
-        self.roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
-        pitch_crit = torch.atan2(2.0*h, wheel_base_t)
-        self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
-=======
         # com_z = self.robot.data.root_com_pos_w[:, 2]
         # h = torch.clamp(com_z - self.ground_z, min=1e-3)
         # track_width = 0.3765
@@ -284,21 +256,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # pitch_crit = torch.atan2(2.0*h, wheel_base_t)
         # self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
->>>>>>> Stashed changes
 
         obs = torch.hstack((self.forward_speed, self.dot, self.cross, self.dist, self.roll_deg, self.pitch_deg))
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-<<<<<<< Updated upstream
-        roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
-        pitch_0 = 0.2 * self.pitch_crit_deg
-        r = 1-(self.roll_deg/roll_0)
-        roll_sig = 1/(1+torch.exp(-r))
-        p = 1-(self.pitch_deg/pitch_0)
-        pitch_sig = 1/(1+torch.exp(-p))
-=======
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
         # pitch_0 = 0.2 * self.pitch_crit_deg
@@ -306,7 +269,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # roll_sig = 1/(1+torch.exp(-r))
         # p = 1-(self.pitch_deg/pitch_0)
         # pitch_sig = 1/(1+torch.exp(-p))
->>>>>>> Stashed changes
 
         # not_rolling = self.roll_deg < roll_0
         # roll_reward = torch.where(
@@ -377,18 +339,10 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
 
 
-<<<<<<< Updated upstream
-        total_reward = 1.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*speed_reward + 1.0*success_reward
-        #total_reward = 1.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*success_reward
-        print(f'D:{1.0*distance_reward[0][0]}  R:{1.0*roll_reward[0][0]}  P:{1.0*pitch_reward[0][0]}  A:{1.0*alignment_reward[0][0]}  S:{1.0*speed_reward[0][0]} Tot:{total_reward[0][0]}')
-        #print(f'Dist:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
-        #print(self.roll_crit_deg)
-=======
         total_reward = torch.sigmoid(vel) * alignment_reward
         print(f'A:{alignment_reward[0][0]} S:{torch.tanh(vel)[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         #print(psi_target[0][0])
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
->>>>>>> Stashed changes
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:

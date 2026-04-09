@@ -291,7 +291,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         alignment_reward = self.dot_norm
 
-        is_aligned = alignment_reward >= 0.5
+        is_aligned = alignment_reward >= 0.0
         scale = 0.0001
         dist_delta = (self._prev_dist - self.dist)/scale
         distance_reward = torch.where(
@@ -313,7 +313,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
 
 
-        total_reward = (speed_reward * alignment_reward) + success_reward
+        total_reward = (speed_reward * alignment_reward) + distance_reward + success_reward
         print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward

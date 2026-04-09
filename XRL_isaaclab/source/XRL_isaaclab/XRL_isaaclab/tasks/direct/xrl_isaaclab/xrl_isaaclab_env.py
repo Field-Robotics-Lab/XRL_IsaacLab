@@ -64,40 +64,41 @@ class XrlIsaaclabEnv(DirectRLEnv):
     def __init__(self, cfg: XrlIsaaclabEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         N = self.cfg.scene.num_envs
         device = self.device
         #self._prev_dist = torch.full((N,), float("inf"), device=device)
         #self.dist = torch.zeros(N,device=device)
         self._prev_dist = torch.zeros((N, 1), device=device)
         self._stuck_count = torch.zeros((N,), dtype=torch.int32, device=device)
+        self._angle_count = torch.zeros((N,), dtype=torch.int32, device=device)
+        self._success_count = torch.zeros((N,), dtype=torch.int32, device=device)
+        self._turned_around = torch.zeros((N,), dtype=torch.bool, device=device)
         self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         #add background
-            # Terrain importer configuration
-        terrain_importer_cfg = TerrainImporterCfg(
-            prim_path="/World/Terrain",
-            terrain_type="generator",
-            terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
-            #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4; for jetbot
-            #noise range = (-0.2, 0.2), noise step = 0.005, downsampled scale = 0.4; for jackal
-        )
-            # Instantiate importer
-        self.terrain_importer = terrain_importer_cfg.class_type(terrain_importer_cfg)
-            # Auto-import happens inside __init__, so NO further calls needed
+        #     # Terrain importer configuration
+        # terrain_importer_cfg = TerrainImporterCfg(
+        #     prim_path="/World/Terrain",
+        #     terrain_type="generator",
+        #     terrain_generator=ROUGH_TERRAINS_CFG,   # <-- REQUIRED; Adjustment made in rough.py script in the IsaacLab source files outside the current project
+        #     #noise range = (-0.12, 0.12), noise step = 0.008, downsampled scale = 0.4; for jetbot
+        #     #noise range = (-0.2, 0.2), noise step = 0.005, downsampled scale = 0.4; for jackal
+        # )
+        #     # Instantiate importer
+        # self.terrain_importer = terrain_importer_cfg.class_type(terrain_importer_cfg)
+        #     # Auto-import happens inside __init__, so NO further calls needed
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-        # add raycaster for depth measurments
-        self.ground_ray = RayCaster(self.cfg.ground_ray)
-        self.scene.sensors["ground_ray"] = self.ground_ray
+        # # add raycaster for depth measurments
+        # self.ground_ray = RayCaster(self.cfg.ground_ray)
+        # self.scene.sensors["ground_ray"] = self.ground_ray
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -108,10 +109,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # setting aside useful variables for later
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
         self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
-        self.pose_commands = torch.randn((self.cfg.scene.num_envs, 3)).cuda()#set to 3 to account for the x,y, and z position data
-        self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
+        self.pose_commands = 2 * torch.randn((self.cfg.scene.num_envs, 3)).cuda()  #set to 3 to account for the x,y, and z position data
+        #self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
         self.pose_commands[:, -1] = 0.0
         self.offsets = self.scene.env_origins[:,:3].clone() #save the individual environment offsets
+        self.pose_commands += self.offsets
+
 
 
         # offsets to account for atan range and keep things on [-pi, pi]
@@ -164,24 +167,40 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.actions = actions.clone()
         self._visualize_markers()
 
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
+        #self.dist_0 = 2.0
+        left = self.actions[:,0:1]
+        right = self.actions[:,1:2]
+        expanded = torch.cat([left, right, left, right], dim=1)
+        zero_expanded = torch.zeros_like(expanded)
+        target_vel = torch.where(
+            self.dist <= self.dist_0,
+            zero_expanded,
+            expanded
+        )
+        self.robot.set_joint_velocity_target(target_vel, joint_ids=self.dof_idx)
+        #self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
 
     def _get_observations(self) -> dict:
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)
+        self.forwards[:,-1] = 0.0
+        denom_for = torch.linalg.norm(self.forwards, dim=1, keepdim=True).clamp_min(1e-6)
+        self.forwards_unit = self.forwards / denom_for
         self.forwards_unit = self.forwards/torch.linalg.norm(self.forwards, dim=1, keepdim=True)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
         self.pose_target = torch.sub(self.pose_commands, self.pose)
-        self.pose_target_unit = self.pose_target/torch.linalg.norm(self.pose_target, dim=1, keepdim=True)
-        self.forwards[:,-1] = 0.0
         self.pose_target[:,-1] = 0.0
+        denom_targ = torch.linalg.norm(self.pose_target, dim=1, keepdim=True).clamp_min(1e-6)
+        self.pose_target_unit = self.pose_target / denom_targ
+        self.pose_target_unit = self.pose_target/torch.linalg.norm(self.pose_target, dim=1, keepdim=True)
 
         self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
-        cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
-        self.cos_psi = torch.clamp(cos_psi, -1.0, 1.0)
+        self.dot_norm = torch.sum(self.forwards_unit * self.pose_target_unit, dim=-1, keepdim=True)
         self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
-        self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
+        self.cross_norm = torch.cross(self.forwards_unit, self.pose_target_unit, dim=-1)[:,-1].reshape(-1,1)
+        #self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
+        self.forward_speed = self.robot.data.root_com_lin_vel_w[:,0].reshape(-1,1)
 
 
         x_pose = self.pose[:,0] #column vector for all current x positions
@@ -191,7 +210,14 @@ class XrlIsaaclabEnv(DirectRLEnv):
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
         self.dist = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1, 1)
+        self.dist_0 = 2.0
+        self.success = self.dist <= self.dist_0
 
+        self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
+        cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
+        self.cos_psi = torch.clamp(cos_psi, -1.0, 1.0)
+        self.cross = torch.cross(self.forwards, self.pose_target, dim=-1)[:,-1].reshape(-1,1)
+        self.forward_speed = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
 
         self.euler = math_utils.euler_xyz_from_quat(self.robot.data.root_link_quat_w)
         self.roll  = self.euler[0] #pull the real-time roll angle from the euler tensor
@@ -199,137 +225,102 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.pitch = self.euler[1]
         self.pitch_deg = torch.rad2deg(self.pitch).abs().unsqueeze(-1)
 
-        # Get the ray sensor (use ONE handle consistently)
-        ray = self.scene.sensors["ground_ray"]
+        # # Get the ray sensor (use ONE handle consistently)
+        # ray = self.scene.sensors["ground_ray"]
 
-        # Update it each step (your env doesn't have self.dt)
-        ray.update(self.cfg.sim.dt)
+        # # Update it each step (your env doesn't have self.dt)
+        # ray.update(self.cfg.sim.dt)
 
-        # Hit positions (num_envs, num_rays, 3)
-        ray_hits_w = ray.data.ray_hits_w
+        # # Hit positions (num_envs, num_rays, 3)
+        # ray_hits_w = ray.data.ray_hits_w
 
-        # One ray → ground z
-        #ground_z = ray_hits_w[:, 0, 2]
-        ground_z = ray_hits_w[..., 0, 2].reshape(self.num_envs)
+        # # One ray → ground z
+        # #ground_z = ray_hits_w[:, 0, 2]
+        # ground_z = ray_hits_w[..., 0, 2].reshape(self.num_envs)
 
 
-        # Fallback if miss is encoded as NaN/inf
-        ground_z = torch.where(
-            torch.isfinite(ground_z),
-            ground_z,
-            self.robot.data.root_pos_w[:, 2] - 1.0
-        )
+        # # Fallback if miss is encoded as NaN/inf
+        # ground_z = torch.where(
+        #     torch.isfinite(ground_z),
+        #     ground_z,
+        #     self.robot.data.root_pos_w[:, 2] - 1.0
+        # )
 
-        self.ground_z = ground_z
+        # self.ground_z = ground_z
 
-        com_z = self.robot.data.root_com_pos_w[:, 2]
-        h = torch.clamp(com_z - self.ground_z, min=1e-3)
-        track_width = 0.3765
-        track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
-        wheel_base = 0.430
-        wheel_base_t = torch.full_like(h, wheel_base)
-        roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
-        self.roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
-        pitch_crit = torch.atan2(2.0*h, wheel_base_t)
-        self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
+        # com_z = self.robot.data.root_com_pos_w[:, 2]
+        # h = torch.clamp(com_z - self.ground_z, min=1e-3)
+        # track_width = 0.3765
+        # track_width_t = torch.full_like(h, track_width) #create a tensor the same size as h with the trackwidth value
+        # wheel_base = 0.430
+        # wheel_base_t = torch.full_like(h, wheel_base)
+        # roll_crit = torch.atan2(2.0*h, track_width_t) #tread (t) is the distance between the center point of both tires on one axle. 376.5 mm or 0.3765 m on the Jackal
+        # self.roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
+        # pitch_crit = torch.atan2(2.0*h, wheel_base_t)
+        # self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
-        obs = torch.hstack((self.forward_speed, self.cos_psi, self.dist, self.roll_deg, self.pitch_deg))
+        obs = torch.hstack((self.forward_speed, self.dot, self.cross, self.dist, self.roll_deg, self.pitch_deg))
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
-        roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
-        pitch_0 = 0.2 * self.pitch_crit_deg
-        r = 1-(self.roll_deg/roll_0)
-        roll_sig = 1/(1+torch.exp(-r))
-        p = 1-(self.pitch_deg/pitch_0)
-        pitch_sig = 1/(1+torch.exp(-p))
+        # roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
+        # pitch_0 = 0.2 * self.pitch_crit_deg
+        # r = 1-(self.roll_deg/roll_0)
+        # roll_sig = 1/(1+torch.exp(-r))
+        # p = 1-(self.pitch_deg/pitch_0)
+        # pitch_sig = 1/(1+torch.exp(-p))
 
-        not_rolling = self.roll_deg < roll_0
-        roll_reward = torch.where(
-            not_rolling,
-            #roll_sig,
-            torch.zeros_like(roll_sig),
-            -1*roll_sig
-        )
+        # not_rolling = self.roll_deg < roll_0
+        # roll_reward = torch.where(
+        #     not_rolling,
+        #     #roll_sig,
+        #     torch.zeros_like(roll_sig),
+        #     -1*roll_sig
+        # )
 
-        not_pitching = self.pitch_deg < pitch_0
-        pitch_reward = torch.where(
-            not_pitching,
-            #pitch_sig,
-            torch.zeros_like(pitch_sig),
-            -1*pitch_sig
-        )
+        # not_pitching = self.pitch_deg < pitch_0
+        # pitch_reward = torch.where(
+        #     not_pitching,
+        #     #pitch_sig,
+        #     torch.zeros_like(pitch_sig),
+        #     -1*pitch_sig
+        # )
 
-        dist_delta = (self._prev_dist - self.dist)
-        is_closer = dist_delta > 0
-        distance_reward = torch.zeros_like(self.dist)
-        distance_reward += torch.where(
-            is_closer,
-            torch.full((self.cfg.scene.num_envs,1), 1, device=self.device),
-            torch.where(
-                dist_delta < 3,
-                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device),
-                torch.zeros_like(self.dist)
-            )
+        alignment_reward = self.dot_norm
+
+        is_aligned = alignment_reward >= 0.5
+        scale = 0.0001
+        dist_delta = (self._prev_dist - self.dist)/scale
+        distance_reward = torch.where(
+            is_aligned,
+            dist_delta,
+            torch.zeros_like(self.dist)
         )
         self._prev_dist = self.dist.detach()
 
-        psi_target = torch.acos(self.cos_psi)
-        psi_target_deg = torch.rad2deg(psi_target).abs()
-        is_aligned = psi_target_deg < 45
-        align_sig = 1/(1+torch.exp(-self.cos_psi))
-        a = torch.full((self.cfg.scene.num_envs,1), 1, device=self.device)
-        alignment_reward = torch.where(
-            is_aligned,
-            a,
-            #torch.zeros_like(self.dot)
-            torch.where(
-                psi_target_deg > 90,
-                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device),
-                torch.zeros_like(psi_target_deg)
-            )
-        )
+        speed_reward = torch.sigmoid(self.forward_speed)
+        #speed_reward = torch.tanh(self.forward_speed)
 
-        is_moving = self.forward_speed > 0 and is_aligned
-        #speed_sig = 1/(1+torch.exp(-self.forward_speed))
-        speed_sig = torch.full((self.cfg.scene.num_envs,1), -3, device=self.device)
-        speed_reward = torch.where(
-            is_moving,
-            #speed_sig,
-            torch.full((self.cfg.scene.num_envs,1), 1, device=self.device),
-            torch.where(
-                self.forward_speed == 0 and is_aligned,
-                torch.zeros_like(self.forward_speed),
-                torch.full((self.cfg.scene.num_envs,1), -3, device=self.device)
-            )
-        )
-
-        dist_0 = 1.0
-        self.success = self.dist <= dist_0
-        success_sig = torch.full((self.cfg.scene.num_envs,1), 500, device=self.device)
+        #self.success = self.dist <= self.dist_0
+        success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
         success_reward = torch.where(
             self.success,
             success_sig,
-            #torch.zeros_like(self.forward_speed)
             torch.zeros_like(self.dist)
         )
 
 
-        total_reward = 2.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*speed_reward + 1.0*success_reward
-        #total_reward = 3.0*distance_reward + 1.0*roll_reward + 1.0*pitch_reward + 1.0*alignment_reward + 1.0*success_reward
-        print(f'D:{1.0*distance_reward[0][0]}  R:{1.0*roll_reward[0][0]}  P:{1.0*pitch_reward[0][0]}  A:{1.0*alignment_reward[0][0]}  S:{1.0*speed_reward[0][0]} Tot:{total_reward[0][0]}')
-        #print(f'Dist:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
-        #print(self.roll_crit_deg)
+        total_reward = (speed_reward * alignment_reward) + success_reward
+        print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         N = self.num_envs  # or self.cfg.scene.num_envs depending on your class
 
         #calculate necessary data to determine if the vehicle is  stuck
@@ -343,17 +334,32 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._stuck_count = torch.where(not_moving, self._stuck_count + 1, torch.zeros_like(self._stuck_count))
         self._is_stuck = self._stuck_count >= steps_required
 
-        R_crit = self.roll_deg.abs() >= 0.7*self.roll_crit_deg
-        R_crit = R_crit.squeeze(-1)
-        P_crit = self.pitch_deg.abs() >= 0.7*self.pitch_crit_deg
-        P_crit = P_crit.squeeze(-1)
-        A_crit = self.cos_psi > 50
-        A_crit = A_crit.squeeze(-1)
-        terminated = R_crit | P_crit | A_crit | self._is_stuck
+        # R_crit = self.roll_deg.abs() >= 0.7*self.roll_crit_deg
+        # R_crit = R_crit.squeeze(-1)
+        # P_crit = self.pitch_deg.abs() >= 0.7*self.pitch_crit_deg
+        # P_crit = P_crit.squeeze(-1)
+        psi_target = torch.acos(self.dot)
+        psi_target_deg = torch.rad2deg(psi_target).abs()
+        A_crit = psi_target_deg > 135
+        #self._turned_around = turned_around.squeeze(-1)
+        self._angle_count = torch.where(
+            A_crit,
+            self._angle_count + 1,
+            torch.zeros_like(self._angle_count)
+        )
+        self._turned_around = self._angle_count > steps_required
+        #terminated = R_crit | P_crit | A_crit | self._is_stuck
+        self._success_count = torch.where(
+            self.success,
+            self._success_count + 1,
+            torch.zeros_like(self._angle_count)
+        )
+        self.goal = self._success_count > steps_required
+
+        terminated = self._turned_around | self._is_stuck | self.goal 
 
         terminated = terminated.to(torch.bool).reshape(N)
         time_out  = time_out.to(torch.bool).reshape(N)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         return terminated, time_out
 
@@ -362,12 +368,35 @@ class XrlIsaaclabEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # pick new commands for reset envs
         if not torch.is_tensor(env_ids):
             env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
         env_ids = env_ids.reshape(-1)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
+
+        # # Old rejection sampling (kept for reference)
+        # min_r = torch.full((env_ids.numel(),), 3.0, device=self.device)
+        # xy = 2 * torch.randn((env_ids.numel(), 2), device=self.device)
+        # for _ in range(10):
+        #     r = torch.linalg.norm(xy, dim=1)
+        #     mask = r < min_r
+        #     if not mask.any():
+        #         break
+        #     xy[mask] = 2 * torch.randn((mask.sum(), 2), device=self.device)
+        
+        # self.pose_commands[env_ids, :2] = xy + self.offsets[env_ids, :2]
+        # self.pose_commands[env_ids, 2] = 0.0
+
+        # Annulus sampling: always respects minimum radius
+        min_r = 3.0
+        max_r = 8.0
+        theta = 2 * torch.pi * torch.rand((env_ids.numel(),), device=self.device)
+        rad = torch.sqrt(
+            torch.rand((env_ids.numel(),), device=self.device) * (max_r**2 - min_r**2) + min_r**2
+        )
+        xy = torch.stack((rad * torch.cos(theta), rad * torch.sin(theta)), dim=1)
+        self.pose_commands[env_ids, :2] = xy + self.pose[env_ids, :2]
+        self.pose_commands[env_ids, 2] = 0.0
 
         #calculate distance to target
         x_pose = self.pose[:,0] #column vector for all current x positions
@@ -378,12 +407,13 @@ class XrlIsaaclabEnv(DirectRLEnv):
         y_dif = torch.sub(y_commands,y_pose)
         dist_all = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1, 1)
         dist = dist_all[env_ids]
-        self.dist_0 = dist.detach()
 
         #reset the environment buffers for determining if the robot is stuck
         self._prev_dist[env_ids] = dist.detach()
         self._stuck_count[env_ids] = 0
         self._is_stuck[env_ids] = False
+        self._angle_count[env_ids] = 0
+        self._turned_around[env_ids] = False
 
         # recalculate the orientations for the command markers with the new commands
         cmds = self.pose_commands[env_ids]
@@ -397,43 +427,42 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #self.yaws[env_ids] = torch.atan(ratio).reshape(-1,1) + offsets.reshape(-1,1)
         self.yaws[env_ids, 0] = torch.atan(ratio) + offsets
 
-        # set the root state for the reset envs
-        fp = self.terrain_importer.flat_patches
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        fp_root_state = default_root_state.clone()
+        # # set the root state for the reset envs
+        # fp = self.terrain_importer.flat_patches
+        # default_root_state = self.robot.data.default_root_state[env_ids]
+        # fp_root_state = default_root_state.clone()
 
-        root_spawn = fp.get("root_spawn", None)
-        if root_spawn is not None:
-            if root_spawn.ndim >= 3:
-                points = root_spawn[env_ids]
-                centers = points.mean(dim=2)
-                #centers_w = centers + self.scene.env_origins[env_ids].unsqueeze(1)
-                points_dist = centers[..., 0] ** 2 + centers[..., 1] ** 2
-                best_idx = torch.argmin(points_dist, dim=1)
-                patch_local = points[torch.arange(env_ids.numel()), best_idx, 0]
-            elif root_spawn.ndim == 2:
-                patch_local = root_spawn[env_ids, 0]
-            else:
-                patch_local = root_spawn[env_ids]
-            patch_local = patch_local.reshape(-1, 3)
-            fp_root_state[:, :3] += patch_local
-            fp_root_state[:, :3] += self.scene.env_origins[env_ids]
-            fp_root_state[:, 2] += 0.25  # put it above ground a bit (don’t trust patch_local[2])
-            # Spawn target near the flat patch (world coords)
-            new_cmds = torch.randn((env_ids.numel(), 3), device=self.device)
-            new_cmds[:, :2] = 3.0 * new_cmds[:, :2]  # +/- ~2m in XY
-            new_cmds[:, 2] = 0.0
-            new_cmds[:, :2] += fp_root_state[:, :2]
-            self.pose_commands[env_ids] = new_cmds
-            self.robot.write_root_state_to_sim(fp_root_state, env_ids)
-        else:
-            # Fallback: keep target near env origin
-            new_cmds = torch.randn((env_ids.numel(), 3), device=self.device) + 3
-            new_cmds[:, :2] = 3.0 * new_cmds[:, :2]
-            new_cmds[:, 2] = 0.0
-            new_cmds[:, :2] += self.scene.env_origins[env_ids, :2]
-            self.pose_commands[env_ids] = new_cmds
-            default_root_state[:, :3] += self.scene.env_origins[env_ids]
-            self.robot.write_root_state_to_sim(default_root_state, env_ids)
+        # root_spawn = fp.get("root_spawn", None)
+        # if root_spawn is not None:
+        #     if root_spawn.ndim >= 3:
+        #         points = root_spawn[env_ids]
+        #         centers = points.mean(dim=2)
+        #         #centers_w = centers + self.scene.env_origins[env_ids].unsqueeze(1)
+        #         points_dist = centers[..., 0] ** 2 + centers[..., 1] ** 2
+        #         best_idx = torch.argmin(points_dist, dim=1)
+        #         patch_local = points[torch.arange(env_ids.numel()), best_idx, 0]
+        #     elif root_spawn.ndim == 2:
+        #         patch_local = root_spawn[env_ids, 0]
+        #     else:
+        #         patch_local = root_spawn[env_ids]
+        #     patch_local = patch_local.reshape(-1, 3)
+        #     fp_root_state[:, :3] += patch_local
+        #     fp_root_state[:, :3] += self.scene.env_origins[env_ids]
+        #     fp_root_state[:, 2] += 0.25  # put it above ground a bit (don’t trust patch_local[2])
+        #     # Spawn target near the flat patch (world coords)
+        #     new_cmds = torch.randn((env_ids.numel(), 3), device=self.device)
+        #     new_cmds[:, :2] = 3.0 * new_cmds[:, :2]  # +/- ~2m in XY
+        #     new_cmds[:, 2] = 0.0
+        #     new_cmds[:, :2] += fp_root_state[:, :2]
+        #     self.pose_commands[env_ids] = new_cmds
+        #     self.robot.write_root_state_to_sim(fp_root_state, env_ids)
+        # else:
+        #     # Fallback: keep target near env origin
+        #     new_cmds = torch.randn((env_ids.numel(), 3), device=self.device) + 3
+        #     new_cmds[:, :2] = 3.0 * new_cmds[:, :2]
+        #     new_cmds[:, 2] = 0.0
+        #     new_cmds[:, :2] += self.scene.env_origins[env_ids, :2]
+        #     self.pose_commands[env_ids] = new_cmds
+        #     default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        #     self.robot.write_root_state_to_sim(default_root_state, env_ids)
         self._visualize_markers()
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^

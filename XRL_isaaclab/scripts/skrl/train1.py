@@ -70,6 +70,7 @@ import random
 from datetime import datetime
 
 import skrl
+import numpy as np
 from packaging import version
 
 # check for minimum supported skrl version
@@ -195,6 +196,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     agent = runner.agent
 
+    # Hook TensorBoard write to capture the exact scalar value that TB logs
+    _orig_write_tracking_data = agent.write_tracking_data
+
+    def _write_tracking_data_hook(timestep: int, timesteps: int) -> None:
+        tracked_total = agent.tracking_data.get("Reward / Total reward (mean)")
+        if tracked_total:
+            agent._last_tb_total_reward_mean = float(np.mean(tracked_total))
+        else:
+            agent._last_tb_total_reward_mean = None
+        _orig_write_tracking_data(timestep, timesteps)
+
+    agent.write_tracking_data = _write_tracking_data_hook
+
     agents_scope = [(0, env.num_envs)]  # one agent handles all envs
     trainer = StepTrainer(env,agent,agents_scope=agents_scope,cfg=agent_cfg["trainer"])
 
@@ -202,10 +216,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     timesteps = agent_cfg["trainer"]["timesteps"]
 
+    # Early stopping based on plateau of Total Reward (mean)
+    # plateau_window = 300
+    # plateau_patience = 2000  # number of iterations without improvement before stopping
+    plateau_rel_delta = 0.3  # relative improvement threshold (e.g., 0.1%)
+
+    # total_reward_means = []
+    # best_mean = -float("inf")
+    # plateau_counter = 0
+    # min_episodes = timesteps / 10
+
+    # Previous early-stopping logic (kept for reference)
     window = 300
-    tgt_avg = 450
+    #tgt_avg = 450
     episode_returns = []
-    min_episodes = timesteps/10
+    avg_return = []
+    delta_count = 0
+    min_episodes = timesteps / 100
 
     for i in range(timesteps):
 
@@ -214,27 +241,63 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         next_states, rewards, terminated, truncated, infos = trainer.train()
         
-        # if "episode" in infos:
-        #     ep_info = infos["episode"]
-        #     if "reward" in ep_info:
-        # vals = rewards[0][0]
-        # print(vals)
-        episode_returns.extend(rewards)
+        # # Track per-step reward mean (useful for inspection/debug)
+        # if hasattr(rewards, "mean"):
+        #     step_reward_mean = float(rewards.mean())
+        # else:
+        #     step_reward_mean = float(sum(rewards) / len(rewards))
+        # # Log per-step reward mean to TensorBoard (via skrl tracking)
+        # agent.track_data("Reward / Step reward (mean)", step_reward_mean)
+
+        # # Track Total Reward (mean) exactly as TensorBoard logs it (raw, unsmoothed)
+        # tracked_total = getattr(agent, "_last_tb_total_reward_mean", None)
+        # if tracked_total is not None:
+        #     total_reward_means.append(tracked_total)
+
+        #Previous early-stopping logic (kept for reference)
+        episode_returns.append(rewards)
 
         if i % min_episodes == 0:
             agent.save(os.path.join(log_dir, "checkpoints", f"checkpoint_{i}.pt"))
 
-        if len(episode_returns) > min_episodes:
-            #if len(episode_returns) >= window:
-            avg = sum(episode_returns[-window:])/window
-            #print(avg)
-            if avg >= tgt_avg:
-                print(f"[INFO] Early Stop; avg_reward = {avg}")
-                break
-        else:
-            continue
+        # if len(total_reward_means) >= plateau_window:
+        #     rolling_mean = sum(total_reward_means[-plateau_window:]) / plateau_window
+        #     improvement_threshold = plateau_rel_delta * max(1.0, abs(best_mean))
+        #     if rolling_mean > best_mean + improvement_threshold:
+        #         best_mean = rolling_mean
+        #         plateau_counter = 0
+        #     else:
+        #         plateau_counter += 1
 
-    # close the simulator
+        #     if plateau_counter >= plateau_patience:
+        #         print(
+        #             f"[INFO] Early Stop (plateau); rolling_mean = {rolling_mean:.4f}, "
+        #             f"best_mean = {best_mean:.4f}, patience = {plateau_patience}"
+        #         )
+        #         break
+
+        # Previous early-stopping logic (kept for reference)
+        if len(episode_returns) > min_episodes:
+            avg = sum(episode_returns[-window:]) / window
+            if len(avg_return) == 0:
+                avg_return.append(avg)
+            else:
+                delta_avg = avg - avg_return[-1]
+                delta_percent = delta_avg.abs()/avg_return[-1].abs()
+                print(delta_percent)
+                if delta_percent < plateau_rel_delta:
+                    delta_count += 1
+                    if delta_count == window:
+                        print(f"[INFO] Early Stop; avg_reward = {avg}")
+                        break
+                else:
+                    delta_count = 0
+                    continue
+            # if avg >= tgt_avg:
+            #     print(f"[INFO] Early Stop; avg_reward = {avg}")
+            #     break
+
+    #close the simulator
     env.close()
 
 

@@ -22,6 +22,7 @@ from .xrl_isaaclab_env_cfg import XrlIsaaclabEnvCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.config import ROUGH_TERRAINS_CFG
 from isaaclab.sensors import RayCaster
+from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
@@ -67,6 +68,9 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._success_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._turned_around = torch.zeros((N,), dtype=torch.bool, device=device)
         self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
+        wheel_radius = 0.03
+        wheel_base = 0.1125
+        self.controller = DifferentialController("test_controller", wheel_radius, wheel_base)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -158,10 +162,23 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        #Setting values to tie the wheel velocities on either side together.
-        left = self.actions[:,0:1]
-        right = self.actions[:,1:2]
-        expanded = torch.cat([left, right, left, right], dim=1)
+        # RL outputs [v, omega]
+        v_cmd = self.actions[:,0:1]
+        w_cmd = self.actions[:,1:2]
+
+        # controller maps body commands -> wheel commands
+        left_vel, right_vel = self.controller.forward(v_cmd,w_cmd)
+        #Setup for simplified e2e
+        # left = self.actions[:,0:1]
+        # right = self.actions[:,1:2]
+
+        # joint_targets = torch.zeros((self.cfg.scene.num_envs, self.num_wheel_joints), device=self.device)
+        # joint_targets[:, self.left_wheel_ids] = left_vel.unsqueeze(-1)
+        # joint_targets[:, self.right_wheel_ids] = right_vel.unsqueeze(-1)
+
+        # self.robot.set_joint_velocity_target(joint_targets)
+
+        expanded = torch.cat([left_vel, right_vel, left_vel, right_vel], dim=1)
         zero_expanded = torch.zeros_like(expanded)
         target_vel = torch.where(
             self.dist <= self.dist_0,
@@ -169,7 +186,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
             expanded
         )
         self.robot.set_joint_velocity_target(target_vel, joint_ids=self.dof_idx)
-        #self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx)
+        #self.robot.set_joint_velocity_target(self.actions, joint_ids=self.dof_idx) #needed for straight e2e
 
     def _get_observations(self) -> dict:
         self.forwards = math_utils.quat_apply(self.robot.data.root_link_quat_w, self.robot.data.FORWARD_VEC_B)

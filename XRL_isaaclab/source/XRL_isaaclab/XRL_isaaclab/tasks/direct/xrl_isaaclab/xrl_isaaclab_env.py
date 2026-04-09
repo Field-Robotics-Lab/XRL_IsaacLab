@@ -39,11 +39,6 @@ def define_markers() -> VisualizationMarkers:
     marker_cfg = VisualizationMarkersCfg(
         prim_path="/Visuals/myMarkers",
         markers={
-                # "forward": sim_utils.UsdFileCfg(
-                #     usd_path=x_arrow_path,
-                #     scale=(0.25, 0.25, 0.5),
-                #     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-                # ),
                 "command": sim_utils.UsdFileCfg(
                     usd_path=x_arrow_path,
                     scale=(0.25, 0.25, 0.5),
@@ -66,8 +61,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
         N = self.cfg.scene.num_envs
         device = self.device
-        #self._prev_dist = torch.full((N,), float("inf"), device=device)
-        #self.dist = torch.zeros(N,device=device)
         self._prev_dist = torch.zeros((N, 1), device=device)
         self._stuck_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._angle_count = torch.zeros((N,), dtype=torch.int32, device=device)
@@ -95,11 +88,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
+        
         # # add raycaster for depth measurments
         # self.ground_ray = RayCaster(self.cfg.ground_ray)
         # self.scene.sensors["ground_ray"] = self.ground_ray
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -115,10 +108,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.offsets = self.scene.env_origins[:,:3].clone() #save the individual environment offsets
         self.pose_commands += self.offsets
 
-
-
-        # offsets to account for atan range and keep things on [-pi, pi]
-        #self.pose = self.robot.data.root_com_pose_w[:,0:3]
         ratio = self.pose_commands[:,1]/(self.pose_commands[:,0]+1E-8)
         gzero = torch.where(self.pose_commands > 0, True, False)
         lzero = torch.where(self.pose_commands < 0, True, False)
@@ -169,7 +158,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        #self.dist_0 = 2.0
+        #Setting values to tie the wheel velocities on either side together.
         left = self.actions[:,0:1]
         right = self.actions[:,1:2]
         expanded = torch.cat([left, right, left, right], dim=1)
@@ -258,14 +247,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # self.roll_crit_deg = torch.rad2deg(roll_crit).abs().unsqueeze(-1)
         # pitch_crit = torch.atan2(2.0*h, wheel_base_t)
         # self.pitch_crit_deg = torch.rad2deg(pitch_crit).abs().unsqueeze(-1)
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
 
         obs = torch.hstack((self.forward_speed, self.dot, self.cross, self.dist, self.roll_deg, self.pitch_deg))
         observations = {"policy": obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
         # roll_0 = 0.2 * self.roll_crit_deg #set the threshold angle for the reward to 80% of the critical roll angle
         # pitch_0 = 0.2 * self.pitch_crit_deg
         # r = 1-(self.roll_deg/roll_0)
@@ -304,7 +291,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         speed_reward = torch.sigmoid(self.forward_speed)
         #speed_reward = torch.tanh(self.forward_speed)
 
-        #self.success = self.dist <= self.dist_0
         success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
         success_reward = torch.where(
             self.success,
@@ -315,7 +301,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         total_reward = (speed_reward * alignment_reward) + success_reward
         print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
-        #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:

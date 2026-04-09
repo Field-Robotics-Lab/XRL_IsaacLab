@@ -71,6 +71,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._prev_dist = torch.zeros((N, 1), device=device)
         self._stuck_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._angle_count = torch.zeros((N,), dtype=torch.int32, device=device)
+        self._success_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._turned_around = torch.zeros((N,), dtype=torch.bool, device=device)
         self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
 
@@ -168,7 +169,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        self.dist_0 = 1.0
+        #self.dist_0 = 2.0
         left = self.actions[:,0:1]
         right = self.actions[:,1:2]
         expanded = torch.cat([left, right, left, right], dim=1)
@@ -209,6 +210,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         x_dif = torch.sub(x_commands,x_pose)
         y_dif = torch.sub(y_commands,y_pose)
         self.dist = torch.sqrt((torch.pow(x_dif,2) + torch.pow(y_dif,2))).reshape(-1, 1)
+        self.dist_0 = 2.0
+        self.success = self.dist <= self.dist_0
 
         self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
         cos_psi = torch.sum(self.pose_target_unit * self.forwards_unit, dim=-1, keepdim=True) #dot prod/magnitudes
@@ -286,62 +289,32 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #     -1*pitch_sig
         # )
 
-        deadband =.001
-        #is_closer = dist_delta < 0.001
-        #distance_reward = torch.tanh(dist_delta)
-        #distance_reward = torch.zeros_like(self.dist)
+        alignment_reward = self.dot_norm
+
+        is_aligned = alignment_reward >= 0.5
         scale = 0.0001
         dist_delta = (self._prev_dist - self.dist)/scale
-        distance_reward = 1/torch.linalg.norm(self.pose_target, dim=-1,keepdim=True)
-        # distance_reward = torch.where(
-        #     dist_delta.abs() <= deadband,
-        #     #torch.full((self.cfg.scene.num_envs,1), 1, device=self.device),
-        #     torch.zeros_like(dist_delta),
-        #     torch.tanh(dist_delta / scale)
-            # torch.where(
-            #     dist_delta < -deadband,
-            #     torch.tanh(dist_delta) - 2,
-            #     torch.zeros_like(self.dist)
-            # )
-        # )
+        distance_reward = torch.where(
+            is_aligned,
+            dist_delta,
+            torch.zeros_like(self.dist)
+        )
         self._prev_dist = self.dist.detach()
 
-        # Clamp to avoid acos domain errors when near alignment
-        psi_target = torch.acos(self.dot_norm.clamp(-1.0, 1.0))
-        # If we're essentially at the target, freeze heading error at 0
-        near_goal = self.dist < 1e-3
-        psi_target = torch.where(near_goal, torch.zeros_like(psi_target), psi_target)
-        psi_target_deg = torch.rad2deg(psi_target).abs()
-        is_aligned = 45 < psi_target_deg < 135
-        align_sig = 2/(1+torch.exp(-self.dot_norm))
-        # a = torch.full((self.cfg.scene.num_envs,1), 1, device=self.device)
-        #alignment_reward = self.cos_psi
-        alignment_reward = self.dot_norm
-        heading_penalty = torch.sigmoid(psi_target)
+        speed_reward = torch.sigmoid(self.forward_speed)
+        #speed_reward = torch.tanh(self.forward_speed)
 
-        vel = self.robot.data.root_com_lin_vel_b[:,0].reshape(-1,1)
-        is_negative = dist_delta < 0
-        speed_reward = torch.tanh(dist_delta)
-        # speed_reward = torch.where(
-        #     is_negative,
-        #     torch.sigmoid(-dist_delta),
-        #     torch.sigmoid(dist_delta)
-        # )
-
-        #dist_0 = 1.0
-        self.success = self.dist <= self.dist_0
-        success_sig = torch.full((self.cfg.scene.num_envs,1), 500, device=self.device)
+        #self.success = self.dist <= self.dist_0
+        success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
         success_reward = torch.where(
             self.success,
             success_sig,
-            #torch.zeros_like(self.forward_speed)
             torch.zeros_like(self.dist)
         )
 
 
-        total_reward = torch.sigmoid(vel) * alignment_reward
-        print(f'A:{alignment_reward[0][0]} S:{torch.tanh(vel)[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
-        #print(psi_target[0][0])
+        total_reward = (speed_reward * alignment_reward) + success_reward
+        print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ^
         return total_reward
 
@@ -376,7 +349,14 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
         self._turned_around = self._angle_count > steps_required
         #terminated = R_crit | P_crit | A_crit | self._is_stuck
-        terminated = self._turned_around | self._is_stuck
+        self._success_count = torch.where(
+            self.success,
+            self._success_count + 1,
+            torch.zeros_like(self._angle_count)
+        )
+        self.goal = self._success_count > steps_required
+
+        terminated = self._turned_around | self._is_stuck | self.goal 
 
         terminated = terminated.to(torch.bool).reshape(N)
         time_out  = time_out.to(torch.bool).reshape(N)

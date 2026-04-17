@@ -13,7 +13,10 @@ a more user-friendly way.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
 import sys
+import tokenize
+from io import StringIO
 
 from isaaclab.app import AppLauncher
 
@@ -49,6 +52,8 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+print(args_cli)
+print("TASK:", args_cli.task)
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -59,7 +64,12 @@ sys.argv = [sys.argv[0]] + hydra_args
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
-
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+print("TASK:", args_cli.task)
+import omni.kit.app
+ext_mgr = omni.kit.app.get_app().get_extension_manager()
+print("wheeled robots enabled:", ext_mgr.is_extension_enabled("isaacsim.robot.wheeled_robots"))
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 """Rest everything follows."""
 
 import gymnasium as gym
@@ -106,6 +116,89 @@ import XRL_isaaclab.tasks  # noqa: F401
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
+
+
+def _read_text_if_exists(path: str) -> str:
+    if not os.path.exists(path):
+        return f"[missing] {path}"
+    with open(path, encoding="utf-8") as file:
+        return file.read().strip()
+
+
+def _strip_python_comments(source: str) -> str:
+    tokens = tokenize.generate_tokens(StringIO(source).readline)
+    cleaned_tokens = []
+    last_lineno = 1
+    last_col = 0
+
+    for token_type, token_string, start, end, _ in tokens:
+        start_lineno, start_col = start
+        end_lineno, end_col = end
+
+        if token_type == tokenize.COMMENT:
+            continue
+
+        if start_lineno > last_lineno:
+            last_col = 0
+        if start_col > last_col:
+            cleaned_tokens.append((tokenize.NL, " " * (start_col - last_col)))
+
+        cleaned_tokens.append((token_type, token_string))
+        last_lineno = end_lineno
+        last_col = end_col
+
+    cleaned_source = tokenize.untokenize(cleaned_tokens)
+    cleaned_lines = [line.rstrip() for line in cleaned_source.splitlines() if line.strip()]
+    return "\n".join(cleaned_lines)
+
+
+def _write_run_metadata_report(log_dir: str, env, env_cfg, agent_cfg: dict) -> None:
+    base_env = env.unwrapped
+    env_yaml_path = os.path.join(log_dir, "params", "env.yaml")
+    agent_yaml_path = os.path.join(log_dir, "params", "agent.yaml")
+    report_path = os.path.join(log_dir, "run_details.txt")
+
+    report_sections = [
+        "Run Details",
+        "===========",
+        "",
+        f"Task: {args_cli.task}",
+        f"Algorithm: {algorithm}",
+        f"ML framework: {args_cli.ml_framework}",
+        f"Seed: {env_cfg.seed}",
+        f"Log directory: {log_dir}",
+        "",
+        "Spaces",
+        "------",
+        f"Observation space (cfg): {getattr(env_cfg, 'observation_space', 'N/A')}",
+        f"Action space (cfg): {getattr(env_cfg, 'action_space', 'N/A')}",
+        f"State space (cfg): {getattr(env_cfg, 'state_space', 'N/A')}",
+        f"Gym observation space: {base_env.observation_space}",
+        f"Gym action space: {base_env.action_space}",
+        "",
+        "Observation Function",
+        "--------------------",
+        _strip_python_comments(inspect.getsource(type(base_env)._get_observations)),
+        "",
+        "Reward Function",
+        "---------------",
+        _strip_python_comments(inspect.getsource(type(base_env)._get_rewards)),
+        "",
+        "Environment Configuration",
+        "-------------------------",
+        _read_text_if_exists(env_yaml_path),
+        "",
+        "Agent Configuration",
+        "-------------------",
+        _read_text_if_exists(agent_yaml_path),
+        "",
+        "Experiment Configuration",
+        "------------------------",
+        str(agent_cfg.get("agent", {}).get("experiment", {})),
+    ]
+
+    with open(report_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(report_sections) + "\n")
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -162,6 +255,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    # save a human-readable run summary with reward, observation, and config details
+    _write_run_metadata_report(log_dir, env, env_cfg, agent_cfg)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:

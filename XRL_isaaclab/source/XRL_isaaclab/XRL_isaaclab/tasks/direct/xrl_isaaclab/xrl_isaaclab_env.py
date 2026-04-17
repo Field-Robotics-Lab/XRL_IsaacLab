@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import math
+import numpy as np
 import torch
 from collections.abc import Sequence
 
@@ -22,7 +23,7 @@ from .xrl_isaaclab_env_cfg import XrlIsaaclabEnvCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.config import ROUGH_TERRAINS_CFG
 from isaaclab.sensors import RayCaster
-from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
+#from isaacsim.robot.wheeled_robots.controllers import DifferentialController
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
@@ -59,6 +60,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     def __init__(self, cfg: XrlIsaaclabEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+        self._controller = None
+
         self.dof_idx, _ = self.robot.find_joints(self.cfg.dof_names)
         N = self.cfg.scene.num_envs
         device = self.device
@@ -68,9 +71,18 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._success_count = torch.zeros((N,), dtype=torch.int32, device=device)
         self._turned_around = torch.zeros((N,), dtype=torch.bool, device=device)
         self._is_stuck = torch.zeros((N,), dtype=torch.bool, device=device)
-        wheel_radius = 0.03
-        wheel_base = 0.1125
-        self.controller = DifferentialController("test_controller", wheel_radius, wheel_base)
+        
+
+    def _build_controller(self):
+        if self._controller is None:
+            from isaacsim.robot.wheeled_robots.controllers import DifferentialController
+            wheel_radius = 0.2
+            wheel_base = 0.3765
+            self._controller = DifferentialController(
+                name="diff_drive",
+                wheel_radius=wheel_radius,
+                wheel_base=wheel_base,
+            )
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -144,7 +156,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # offset markers so they are above the jetbot
         #forward_loc = self.forward_marker_location + self.marker_offset
         command_loc = self.command_marker_location + self.marker_offset
-        target_loc = self.target_marker_location + self.marker_offset  # offset target marker to be above ground plane
+        target_loc = self.target_marker_location #+ self.marker_offset  # offset target marker to be above ground plane
         loc = torch.vstack((command_loc, target_loc))
         rots = torch.vstack((self.command_marker_orientations, self.target_marker_orientations))
 
@@ -163,11 +175,16 @@ class XrlIsaaclabEnv(DirectRLEnv):
     #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
         # RL outputs [v, omega]
-        v_cmd = self.actions[:,0:1]
-        w_cmd = self.actions[:,1:2]
+        self._build_controller()
 
-        # controller maps body commands -> wheel commands
-        left_vel, right_vel = self.controller.forward(v_cmd,w_cmd)
+        commands = self.actions[:, :2].detach().cpu().numpy()
+        wheel_targets = np.asarray(
+            [self._controller.forward(command).joint_velocities for command in commands],
+            dtype=np.float32,
+        )
+        wheel_targets = torch.as_tensor(wheel_targets, device=self.device, dtype=self.actions.dtype)
+        left_vel = wheel_targets[:, 0:1]
+        right_vel = wheel_targets[:, 1:2]
         #Setup for simplified e2e
         # left = self.actions[:,0:1]
         # right = self.actions[:,1:2]
@@ -193,13 +210,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.forwards[:,-1] = 0.0
         denom_for = torch.linalg.norm(self.forwards, dim=1, keepdim=True).clamp_min(1e-6)
         self.forwards_unit = self.forwards / denom_for
-        self.forwards_unit = self.forwards/torch.linalg.norm(self.forwards, dim=1, keepdim=True)
         self.pose = self.robot.data.root_com_pose_w[:,0:3]
         self.pose_target = torch.sub(self.pose_commands, self.pose)
         self.pose_target[:,-1] = 0.0
         denom_targ = torch.linalg.norm(self.pose_target, dim=1, keepdim=True).clamp_min(1e-6)
         self.pose_target_unit = self.pose_target / denom_targ
-        self.pose_target_unit = self.pose_target/torch.linalg.norm(self.pose_target, dim=1, keepdim=True)
 
         self.dot = torch.sum(self.forwards * self.pose_target, dim=-1, keepdim=True)
         self.dot_norm = torch.sum(self.forwards_unit * self.pose_target_unit, dim=-1, keepdim=True)
@@ -295,14 +310,15 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
         alignment_reward = self.dot_norm
 
-        is_aligned = alignment_reward >= 0.5
-        scale = 0.0001
+        is_aligned = alignment_reward >= 0.0
+        scale = 0.001
         dist_delta = (self._prev_dist - self.dist)/scale
-        distance_reward = torch.where(
-            is_aligned,
-            dist_delta,
-            torch.zeros_like(self.dist)
-        )
+        distance_reward = dist_delta
+        # distance_reward = torch.where(
+        #     is_aligned,
+        #     dist_delta,
+        #     0.5 * dist_delta
+        # )
         self._prev_dist = self.dist.detach()
 
         speed_reward = torch.sigmoid(self.forward_speed)
@@ -316,14 +332,14 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
 
 
-        total_reward = (speed_reward * alignment_reward) + success_reward
+        total_reward = (alignment_reward) + distance_reward + success_reward
         print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         return total_reward
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        N = self.num_envs  # or self.cfg.scene.num_envs depending on your class
+        N = self.num_envs
 
         #calculate necessary data to determine if the vehicle is  stuck
         no_change = 0.0005
@@ -340,7 +356,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # R_crit = R_crit.squeeze(-1)
         # P_crit = self.pitch_deg.abs() >= 0.7*self.pitch_crit_deg
         # P_crit = P_crit.squeeze(-1)
-        psi_target = torch.acos(self.dot)
+        psi_target = torch.acos(self.cos_psi.squeeze(-1))
         psi_target_deg = torch.rad2deg(psi_target).abs()
         A_crit = psi_target_deg > 135
         #self._turned_around = turned_around.squeeze(-1)
@@ -352,7 +368,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._turned_around = self._angle_count > steps_required
         #terminated = R_crit | P_crit | A_crit | self._is_stuck
         self._success_count = torch.where(
-            self.success,
+            self.success.squeeze(-1),
             self._success_count + 1,
             torch.zeros_like(self._angle_count)
         )

@@ -182,6 +182,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    # base_env = env.unwrapped
+
     # wrap around environment for skrl
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
@@ -202,7 +204,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     def _write_tracking_data_hook(timestep: int, timesteps: int) -> None:
         tracked_total = agent.tracking_data.get("Reward / Total reward (mean)")
         if tracked_total:
-            agent._last_tb_total_reward_mean = float(np.mean(tracked_total))
+            agent._last_tb_total_reward_mean = float(tracked_total[-1])
         else:
             agent._last_tb_total_reward_mean = None
         _orig_write_tracking_data(timestep, timesteps)
@@ -215,24 +217,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # run training
     timesteps = agent_cfg["trainer"]["timesteps"]
+    checkpoint_dir = os.path.join(log_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Early stopping based on plateau of Total Reward (mean)
-    # plateau_window = 300
-    # plateau_patience = 2000  # number of iterations without improvement before stopping
-    plateau_rel_delta = 0.3  # relative improvement threshold (e.g., 0.1%)
+    # Original reward-based early stopping.
+    plateau_window = min(300, timesteps)
+    plateau_patience = 10000
+    plateau_rel_delta = 1e-4
+    total_reward_means = []
+    best_mean = -float("inf")
+    plateau_counter = 0
 
-    # total_reward_means = []
-    # best_mean = -float("inf")
-    # plateau_counter = 0
-    # min_episodes = timesteps / 10
-
-    # Previous early-stopping logic (kept for reference)
-    window = 300
-    #tgt_avg = 450
-    episode_returns = []
-    avg_return = []
-    delta_count = 0
-    min_episodes = timesteps / 100
+    # Early stopping based on plateau of rolling success rate over completed episodes (kept for reference).
+    # success_window = 300
+    # success_patience = 5000
+    # success_rate_delta = 0.001
+    # episode_successes = []
+    # best_success_rate = -float("inf")
+    # success_plateau_counter = 0
+    checkpoint_interval = max(1, timesteps // 100)
+    early_stop_start = max(plateau_window, int(timesteps * 0.3))
 
     for i in range(timesteps):
 
@@ -241,61 +245,54 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         next_states, rewards, terminated, truncated, infos = trainer.train()
         
-        # # Track per-step reward mean (useful for inspection/debug)
-        # if hasattr(rewards, "mean"):
-        #     step_reward_mean = float(rewards.mean())
-        # else:
-        #     step_reward_mean = float(sum(rewards) / len(rewards))
-        # # Log per-step reward mean to TensorBoard (via skrl tracking)
-        # agent.track_data("Reward / Step reward (mean)", step_reward_mean)
+        # Original reward-based early stopping.
+        tracked_total = getattr(agent, "_last_tb_total_reward_mean", None)
+        if tracked_total is not None:
+            total_reward_means.append(tracked_total)
 
-        # # Track Total Reward (mean) exactly as TensorBoard logs it (raw, unsmoothed)
-        # tracked_total = getattr(agent, "_last_tb_total_reward_mean", None)
-        # if tracked_total is not None:
-        #     total_reward_means.append(tracked_total)
+            if len(total_reward_means) >= early_stop_start:
+                rolling_mean = sum(total_reward_means[-plateau_window:]) / plateau_window
+                improvement_threshold = 0.0
+                if best_mean != -float("inf"):
+                    improvement_threshold = plateau_rel_delta * max(1.0, abs(best_mean))
 
-        #Previous early-stopping logic (kept for reference)
-        episode_returns.append(rewards)
-
-        if i % min_episodes == 0:
-            agent.save(os.path.join(log_dir, "checkpoints", f"checkpoint_{i}.pt"))
-
-        # if len(total_reward_means) >= plateau_window:
-        #     rolling_mean = sum(total_reward_means[-plateau_window:]) / plateau_window
-        #     improvement_threshold = plateau_rel_delta * max(1.0, abs(best_mean))
-        #     if rolling_mean > best_mean + improvement_threshold:
-        #         best_mean = rolling_mean
-        #         plateau_counter = 0
-        #     else:
-        #         plateau_counter += 1
-
-        #     if plateau_counter >= plateau_patience:
-        #         print(
-        #             f"[INFO] Early Stop (plateau); rolling_mean = {rolling_mean:.4f}, "
-        #             f"best_mean = {best_mean:.4f}, patience = {plateau_patience}"
-        #         )
-        #         break
-
-        # Previous early-stopping logic (kept for reference)
-        if len(episode_returns) > min_episodes:
-            avg = sum(episode_returns[-window:]) / window
-            if len(avg_return) == 0:
-                avg_return.append(avg)
-            else:
-                delta_avg = avg - avg_return[-1]
-                delta_percent = delta_avg.abs()/avg_return[-1].abs()
-                print(delta_percent)
-                if delta_percent < plateau_rel_delta:
-                    delta_count += 1
-                    if delta_count == window:
-                        print(f"[INFO] Early Stop; avg_reward = {avg}")
-                        break
+                if best_mean == -float("inf") or rolling_mean > best_mean + improvement_threshold:
+                    best_mean = rolling_mean
+                    plateau_counter = 0
                 else:
-                    delta_count = 0
-                    continue
-            # if avg >= tgt_avg:
-            #     print(f"[INFO] Early Stop; avg_reward = {avg}")
-            #     break
+                    plateau_counter += 1
+
+                if plateau_counter >= plateau_patience:
+                    print(
+                        f"[INFO] Early Stop (plateau); rolling_mean = {rolling_mean:.4f}, "
+                        f"best_mean = {best_mean:.4f}, patience = {plateau_patience}"
+                    )
+                    break
+
+        # Success-rate early stopping (kept for reference).
+        # completed_episodes = (terminated | truncated).reshape(-1)
+        # if completed_episodes.any():
+        #     success_flags = base_env.goal.reshape(-1)[completed_episodes]
+        #     episode_successes.extend(success_flags.float().tolist())
+        #
+        #     if i + 1 >= early_stop_start and len(episode_successes) >= success_window:
+        #         rolling_success_rate = sum(episode_successes[-success_window:]) / success_window
+        #
+        #         if best_success_rate == -float("inf") or rolling_success_rate > best_success_rate + success_rate_delta:
+        #             best_success_rate = rolling_success_rate
+        #             success_plateau_counter = 0
+        #         else:
+        #             success_plateau_counter += 1
+        #
+        #         if success_plateau_counter >= success_patience:
+        #             print(
+        #                 f"[INFO] Early Stop (success plateau); rolling_success_rate = {rolling_success_rate:.4f}, "
+        #                 f"best_success_rate = {best_success_rate:.4f}, patience = {success_patience}"
+        #             )
+        #             break
+
+        if i % checkpoint_interval == 0:
+            agent.save(os.path.join(checkpoint_dir, f"checkpoint_{i}.pt"))
 
     #close the simulator
     env.close()

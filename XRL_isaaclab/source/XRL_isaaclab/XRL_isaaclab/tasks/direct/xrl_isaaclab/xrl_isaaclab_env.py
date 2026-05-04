@@ -97,12 +97,12 @@ class XrlIsaaclabEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        self.visualization_markers = define_markers()
+        self.visualization_markers = define_markers() if self.cfg.enable_visualization_markers else None
 
         # setting aside useful variables for later
-        self.up_dir = torch.tensor([0.0, 0.0, 1.0]).cuda()
-        self.yaws = torch.zeros((self.cfg.scene.num_envs, 1)).cuda()
-        self.pose_commands = 2 * torch.randn((self.cfg.scene.num_envs, 3)).cuda()  #set to 3 to account for the x,y, and z position data
+        self.up_dir = torch.tensor([0.0, 0.0, 1.0], device=self.device)
+        self.yaws = torch.zeros((self.cfg.scene.num_envs, 1), device=self.device)
+        self.pose_commands = 2 * torch.randn((self.cfg.scene.num_envs, 3), device=self.device)  #set to 3 to account for the x,y, and z position data
         #self.pose_commands = self.pose_commands/torch.linalg.norm(self.pose_commands, dim=1, keepdim=True)
         self.pose_commands[:, -1] = 0.0
         self.offsets = self.scene.env_origins[:,:3].clone() #save the individual environment offsets
@@ -116,16 +116,19 @@ class XrlIsaaclabEnv(DirectRLEnv):
         offsets = torch.pi*plus - torch.pi*minus
         self.yaws = torch.atan(ratio).reshape(-1,1) + offsets.reshape(-1,1)
 
-        self.forward_marker_location = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
-        self.command_marker_location = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
-        self.target_marker_location = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
-        self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3)).cuda()
+        self.forward_marker_location = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
+        self.command_marker_location = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
+        self.target_marker_location = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
+        self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
         self.marker_offset[:,-1] = 0.5
-        self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
-        self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
-        self.target_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda()
+        self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.target_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
 
     def _visualize_markers(self):
+        if self.visualization_markers is None:
+            return
+
         # get marker locations and orientations
         #self.forward_marker_location = self.robot.data.root_pos_w
         self.command_marker_location = self.robot.data.root_pos_w
@@ -134,7 +137,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         cmd_vec = self.pose_commands - self.robot.data.root_pos_w
         cmd_vec[:, 2] = 0.0
         cmd_yaw = torch.atan2(cmd_vec[:, 1], cmd_vec[:, 0]).reshape(-1, 1)
-        self.command_marker_orientations = math_utils.quat_from_angle_axis(cmd_yaw, self.up_dir).squeeze()
+        self.command_marker_orientations = math_utils.quat_from_angle_axis(cmd_yaw, self.up_dir).reshape(-1, 4)
         self.target_marker_orientations = self.command_marker_orientations
 
         # offset markers so they are above the jetbot
@@ -145,7 +148,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         rots = torch.vstack((self.command_marker_orientations, self.target_marker_orientations))
 
         # render the markers
-        all_envs = torch.arange(self.cfg.scene.num_envs)
+        all_envs = torch.arange(self.cfg.scene.num_envs, device=self.device)
         indices = torch.hstack(
             (torch.zeros_like(all_envs), torch.ones_like(all_envs))
         )
@@ -277,18 +280,21 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # )
 
         alignment_reward = self.dot_norm
+        #alignment_reward = self.dot
 
-        is_aligned = alignment_reward >= 0.5
-        scale = 0.0001
+        is_aligned = alignment_reward >= 0.0
+        scale = 0.001
         dist_delta = (self._prev_dist - self.dist)/scale
-        distance_reward = torch.where(
-            is_aligned,
-            dist_delta,
-            torch.zeros_like(self.dist)
-        )
+        distance_reward = dist_delta
+        # distance_reward = torch.where(
+        #     is_aligned,
+        #     dist_delta,
+        #     0.5 * dist_delta
+        # )
         self._prev_dist = self.dist.detach()
 
         speed_reward = torch.sigmoid(self.forward_speed)
+        #speed_reward = self.forward_speed
         #speed_reward = torch.tanh(self.forward_speed)
 
         success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
@@ -299,7 +305,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         )
 
 
-        total_reward = (speed_reward * alignment_reward) + success_reward
+        total_reward = (speed_reward * alignment_reward) + distance_reward + success_reward
         print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         return total_reward
 
@@ -325,7 +331,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # P_crit = P_crit.squeeze(-1)
         psi_target = torch.acos(self.dot)
         psi_target_deg = torch.rad2deg(psi_target).abs()
-        A_crit = psi_target_deg > 135
+        A_crit = (psi_target_deg > 135).squeeze(-1)
         #self._turned_around = turned_around.squeeze(-1)
         self._angle_count = torch.where(
             A_crit,
@@ -335,9 +341,9 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self._turned_around = self._angle_count > steps_required
         #terminated = R_crit | P_crit | A_crit | self._is_stuck
         self._success_count = torch.where(
-            self.success,
+            self.success.squeeze(-1),
             self._success_count + 1,
-            torch.zeros_like(self._angle_count)
+            torch.zeros_like(self._success_count)
         )
         self.goal = self._success_count > steps_required
 

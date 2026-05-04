@@ -26,6 +26,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
     action_space = 2
     observation_space = 6 #roll, pitch, distance, forward velocity, orientation dot product, and orientation cross product
     state_space = 0
+    enable_visualization_markers: bool = True
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
     # robot(s)

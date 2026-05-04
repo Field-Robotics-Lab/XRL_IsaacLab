@@ -68,7 +68,9 @@ import random
 from datetime import datetime
 
 import skrl
+import torch
 from packaging import version
+import XRL_isaaclab.tasks.direct.xrl_isaaclab.xrl_isaaclab_env as xrl_env_module
 
 # check for minimum supported skrl version
 SKRL_VERSION = "1.4.3"
@@ -108,16 +110,37 @@ algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
 
 
+def _configure_skrl_torch_device(device_spec: str) -> None:
+    """Make skrl's implicit tensor allocations use the Isaac simulation device."""
+    if not args_cli.ml_framework.startswith("torch"):
+        return
+
+    device = torch.device(device_spec)
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+
+    original_parse_device = skrl.config.torch.parse_device
+
+    def parse_device(device_arg=None, validate: bool = True):
+        return original_parse_device(str(device) if device_arg is None else device_arg, validate=validate)
+
+    skrl.config.torch.device = str(device)
+    skrl.config.torch.parse_device = parse_device
+
+
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with skrl agent."""
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    if hasattr(env_cfg, "enable_visualization_markers"):
+        env_cfg.enable_visualization_markers = False
 
     # multi-gpu training config
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
+    _configure_skrl_torch_device(env_cfg.sim.device)
     # max iterations for training
     if args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
@@ -161,6 +184,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
 
     # create isaac environment
+    print(
+        "[INFO] XRL env module: "
+        f"{xrl_env_module.__file__}; num_envs={env_cfg.scene.num_envs}; "
+        f"device={env_cfg.sim.device}; "
+        f"enable_visualization_markers={getattr(env_cfg, 'enable_visualization_markers', None)}"
+    )
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
     # convert to single-agent instance if required by the RL algorithm

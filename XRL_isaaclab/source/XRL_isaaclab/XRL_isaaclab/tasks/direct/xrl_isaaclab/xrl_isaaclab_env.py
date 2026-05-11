@@ -174,10 +174,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
 
     #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
-        # RL outputs [v, omega]
+        # RL outputs [v, omega].
         self._build_controller()
 
-        commands = self.actions[:, :2].detach().cpu().numpy()
+        actions = torch.nan_to_num(self.actions[:, :2], nan=0.0, posinf=0.0, neginf=0.0)
+        commands = actions.detach().cpu().numpy()
         wheel_targets = np.asarray(
             [self._controller.forward(command).joint_velocities for command in commands],
             dtype=np.float32,
@@ -185,9 +186,16 @@ class XrlIsaaclabEnv(DirectRLEnv):
         wheel_targets = torch.as_tensor(wheel_targets, device=self.device, dtype=self.actions.dtype)
         left_vel = wheel_targets[:, 0:1]
         right_vel = wheel_targets[:, 1:2]
-        #Setup for simplified e2e
-        # left = self.actions[:,0:1]
-        # right = self.actions[:,1:2]
+        # print(
+        #     f"raw0:{self.actions[0, 0].item():.3f} "
+        #     f"raw1:{self.actions[0, 1].item():.3f} "
+        #     f"cmd0:{actions[0, 0].item():.3f} "
+        #     f"cmd1:{actions[0, 1].item():.3f} "
+        #     f"L:{left_vel[0, 0].item():.3f} "
+        #     f"R:{right_vel[0, 0].item():.3f} "
+        #     f"cross:{self.cross[0, 0].item():.3f} "
+        #     f"dotn:{self.dot_norm[0, 0].item():.3f}"
+        # )
 
         # joint_targets = torch.zeros((self.cfg.scene.num_envs, self.num_wheel_joints), device=self.device)
         # joint_targets[:, self.left_wheel_ids] = left_vel.unsqueeze(-1)
@@ -308,21 +316,17 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #     -1*pitch_sig
         # )
 
-        alignment_reward = self.dot_norm
+        #alignment_reward = self.dot_norm
+        alignment_reward = torch.exp(self.dot_norm)
 
         is_aligned = alignment_reward >= 0.0
-        scale = 0.001
+        scale = 0.005
         dist_delta = (self._prev_dist - self.dist)/scale
-        distance_reward = dist_delta
-        # distance_reward = torch.where(
-        #     is_aligned,
-        #     dist_delta,
-        #     0.5 * dist_delta
-        # )
+        distance_reward = torch.clamp(dist_delta, -5.0, 5.0)
         self._prev_dist = self.dist.detach()
 
-        speed_reward = torch.sigmoid(self.forward_speed)
-        #speed_reward = torch.tanh(self.forward_speed)
+        #speed_reward = torch.sigmoid(self.forward_speed)
+        speed_reward = torch.tanh(self.forward_speed)
 
         success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
         success_reward = torch.where(
@@ -330,10 +334,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
             success_sig,
             torch.zeros_like(self.dist)
         )
+        # ADDED: Preserve the exact success_reward criterion for training-script success counting.
+        self._last_success_reward_mask = self.success.detach().clone()
 
 
         total_reward = (alignment_reward) + distance_reward + success_reward
-        print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -344,7 +349,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #calculate necessary data to determine if the vehicle is  stuck
         no_change = 0.0005
         #no_change = 1e-2 #threshold to determine if there is no change from the previous timestep.  currently set to 1mm
-        steps_required = 500 # X consecutive timesteps
+        steps_required = 1000 # X consecutive timesteps
+        steps_required_success = 250
         delta = (self._prev_dist - self.dist).abs().squeeze(-1)
         not_moving = delta < no_change
 
@@ -358,7 +364,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # P_crit = P_crit.squeeze(-1)
         psi_target = torch.acos(self.cos_psi.squeeze(-1))
         psi_target_deg = torch.rad2deg(psi_target).abs()
-        A_crit = psi_target_deg > 135
+        A_crit = psi_target_deg > 90
         #self._turned_around = turned_around.squeeze(-1)
         self._angle_count = torch.where(
             A_crit,
@@ -372,7 +378,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
             self._success_count + 1,
             torch.zeros_like(self._angle_count)
         )
-        self.goal = self._success_count > steps_required
+        self.goal = self._success_count > steps_required_success
 
         terminated = self._turned_around | self._is_stuck | self.goal 
 

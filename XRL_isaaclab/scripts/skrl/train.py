@@ -14,6 +14,7 @@ a more user-friendly way.
 
 import argparse
 import inspect
+import shlex
 import sys
 import tokenize
 from io import StringIO
@@ -118,6 +119,7 @@ algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
 
 
+# ADDED: Helpers for command metadata and success-count reporting.
 def _read_text_if_exists(path: str) -> str:
     if not os.path.exists(path):
         return f"[missing] {path}"
@@ -150,6 +152,58 @@ def _strip_python_comments(source: str) -> str:
     cleaned_source = tokenize.untokenize(cleaned_tokens)
     cleaned_lines = [line.rstrip() for line in cleaned_source.splitlines() if line.strip()]
     return "\n".join(cleaned_lines)
+
+
+def _write_training_command(log_dir: str, training_cfg: dict) -> None:
+    command = shlex.join(sys.orig_argv)
+    with open(os.path.join(log_dir, "command.txt"), "w", encoding="utf-8") as file:
+        file.write(
+            "\n".join(
+                [
+                    "Command",
+                    "-------",
+                    command,
+                    "",
+                    "Training Config",
+                    "---------------",
+                    str(training_cfg),
+                ]
+            )
+            + "\n"
+        )
+
+
+def _append_success_summary(
+    log_dir: str,
+    success_iteration_count: int,
+    success_env_iteration_count: int,
+    completed_iterations: int,
+    configured_num_envs: int,
+) -> None:
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+
+    with open(os.path.join(log_dir, "command.txt"), "a", encoding="utf-8") as file:
+        file.write(
+            "\n".join(
+                [
+                    "",
+                    "Success Count",
+                    "-------------",
+                    "Criterion: success_reward mask from _get_rewards",
+                    f"Successful training iterations: {success_iteration_count}",
+                    f"Successful env iterations: {success_env_iteration_count}",
+                    f"Total env iterations: {total_env_iterations}",
+                    f"Successful env iteration percentage: {success_percentage:.2f}%",
+                    f"Configured num envs: {configured_num_envs}",
+                    f"Completed training iterations: {completed_iterations}",
+                ]
+            )
+            + "\n"
+        )
+# END ADDED: Helpers for command metadata and success-count reporting.
 
 
 def _write_run_metadata_report(log_dir: str, env, env_cfg, agent_cfg: dict) -> None:
@@ -255,9 +309,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    # ADDED: Keep the unwrapped env so success counting can read the reward mask.
+    base_env = env.unwrapped
 
     # save a human-readable run summary with reward, observation, and config details
     _write_run_metadata_report(log_dir, env, env_cfg, agent_cfg)
+    # ADDED: Write command and training config details for this run.
+    _write_training_command(log_dir, agent_cfg["trainer"])
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:
@@ -287,8 +345,49 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
         runner.agent.load(resume_path)
 
-    # run training
-    runner.run()
+    # ADDED: Run training step-by-step so success counts can be collected.
+    agent = runner.agent
+    agents_scope = [(0, env.num_envs)]
+    trainer = StepTrainer(env, agent, agents_scope=agents_scope, cfg=agent_cfg["trainer"])
+    timesteps = agent_cfg["trainer"]["timesteps"]
+    success_iteration_count = 0
+    success_env_iteration_count = 0
+    completed_iterations = 0
+
+    for i in range(timesteps):
+        if isinstance(trainer.agents, list):
+            trainer.agents = trainer.agents[0]
+
+        trainer.train()
+        completed_iterations = i + 1
+
+        success_mask = getattr(base_env, "_last_success_reward_mask", None)
+        if success_mask is None:
+            success_mask = getattr(base_env, "success", None)
+        if success_mask is not None:
+            success_mask = success_mask.reshape(-1).bool()
+            successful_envs = int(success_mask.sum().item())
+            success_env_iteration_count += successful_envs
+            if successful_envs > 0:
+                success_iteration_count += 1
+
+    configured_num_envs = int(env_cfg.scene.num_envs)
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+    _append_success_summary(
+        log_dir,
+        success_iteration_count,
+        success_env_iteration_count,
+        completed_iterations,
+        configured_num_envs,
+    )
+    print(
+        f"[INFO] Success count: {success_iteration_count} training iterations, "
+        f"{success_env_iteration_count}/{total_env_iterations} env iterations "
+        f"({success_percentage:.2f}%)"
+    )
 
     # close the simulator
     env.close()

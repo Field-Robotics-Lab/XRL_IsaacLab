@@ -278,8 +278,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #     -1*pitch_sig
         # )
 
-        #alignment_reward = self.dot_norm
-        alignment_reward = torch.exp(self.dot_norm)
+        alignment_reward = self.dot_norm
+        #alignment_reward = torch.exp(self.dot_norm)
 
         is_aligned = alignment_reward >= 0.0
         scale = 0.005

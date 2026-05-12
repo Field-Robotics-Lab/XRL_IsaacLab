@@ -316,8 +316,8 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #     -1*pitch_sig
         # )
 
-        #alignment_reward = self.dot_norm
-        alignment_reward = torch.exp(self.dot_norm)
+        alignment_reward = self.dot_norm
+        #alignment_reward = torch.exp(self.dot_norm)
 
         is_aligned = alignment_reward >= 0.0
         scale = 0.005
@@ -349,8 +349,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #calculate necessary data to determine if the vehicle is  stuck
         no_change = 0.0005
         #no_change = 1e-2 #threshold to determine if there is no change from the previous timestep.  currently set to 1mm
-        steps_required = 1000 # X consecutive timesteps
-        steps_required_success = 250
+        steps_required = 500 # X consecutive timesteps
         delta = (self._prev_dist - self.dist).abs().squeeze(-1)
         not_moving = delta < no_change
 
@@ -364,7 +363,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
         # P_crit = P_crit.squeeze(-1)
         psi_target = torch.acos(self.cos_psi.squeeze(-1))
         psi_target_deg = torch.rad2deg(psi_target).abs()
-        A_crit = psi_target_deg > 90
+        A_crit = psi_target_deg >135
         #self._turned_around = turned_around.squeeze(-1)
         self._angle_count = torch.where(
             A_crit,
@@ -378,7 +377,7 @@ class XrlIsaaclabEnv(DirectRLEnv):
             self._success_count + 1,
             torch.zeros_like(self._angle_count)
         )
-        self.goal = self._success_count > steps_required_success
+        self.goal = self._success_count > steps_required
 
         terminated = self._turned_around | self._is_stuck | self.goal 
 

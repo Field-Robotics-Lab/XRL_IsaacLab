@@ -38,7 +38,7 @@ class XrlIsaaclabEnvCfg(DirectRLEnvCfg):
         ),
     )
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=100, env_spacing=5.0, replicate_physics=True)
     ################################################################## v
     # # viewer
     # viewer: ViewerCfg = ViewerCfg(

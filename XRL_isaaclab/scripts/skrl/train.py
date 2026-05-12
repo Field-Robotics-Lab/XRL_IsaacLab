@@ -13,7 +13,10 @@ a more user-friendly way.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
+import shlex
 import sys
+import textwrap
 
 from isaaclab.app import AppLauncher
 
@@ -66,6 +69,7 @@ import gymnasium as gym
 import os
 import random
 from datetime import datetime
+from pprint import pformat
 
 import skrl
 import torch
@@ -126,6 +130,67 @@ def _configure_skrl_torch_device(device_spec: str) -> None:
 
     skrl.config.torch.device = str(device)
     skrl.config.torch.parse_device = parse_device
+
+
+def _get_method_source(obj, method_name: str) -> str:
+    method = getattr(type(obj), method_name, None)
+    if method is None:
+        return f"[missing] {type(obj).__name__}.{method_name}"
+    try:
+        return textwrap.dedent(inspect.getsource(method)).strip()
+    except (OSError, TypeError):
+        return f"[unavailable] {type(obj).__name__}.{method_name}"
+
+
+def _write_command_report(log_dir: str, env, training_cfg: dict) -> None:
+    os.makedirs(log_dir, exist_ok=True)
+    base_env = getattr(env, "unwrapped", env)
+    sections = [
+        "Command",
+        "-------",
+        shlex.join(sys.orig_argv),
+        "",
+        "Training Config",
+        "---------------",
+        pformat(training_cfg, sort_dicts=False),
+        "",
+        "Reward Function (_get_rewards)",
+        "------------------------------",
+        _get_method_source(base_env, "_get_rewards"),
+    ]
+    with open(os.path.join(log_dir, "command.txt"), "w", encoding="utf-8") as file:
+        file.write("\n".join(sections) + "\n")
+
+
+def _append_success_summary(
+    log_dir: str,
+    success_iteration_count: int,
+    success_env_iteration_count: int,
+    completed_iterations: int,
+    configured_num_envs: int,
+) -> None:
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+    with open(os.path.join(log_dir, "command.txt"), "a", encoding="utf-8") as file:
+        file.write(
+            "\n".join(
+                [
+                    "",
+                    "Success Count",
+                    "-------------",
+                    "Criterion: success_reward mask from _get_rewards",
+                    f"Successful training iterations: {success_iteration_count}",
+                    f"Successful env iterations: {success_env_iteration_count}",
+                    f"Total env iterations: {total_env_iterations}",
+                    f"Successful env iteration percentage: {success_percentage:.2f}%",
+                    f"Configured num envs: {configured_num_envs}",
+                    f"Completed training iterations: {completed_iterations}",
+                ]
+            )
+            + "\n"
+        )
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -191,6 +256,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         f"enable_visualization_markers={getattr(env_cfg, 'enable_visualization_markers', None)}"
     )
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    base_env = env.unwrapped
+    _write_command_report(log_dir, base_env, agent_cfg["trainer"])
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:
@@ -221,7 +288,48 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner.agent.load(resume_path)
 
     # run training
-    runner.run()
+    agent = runner.agent
+    agents_scope = [(0, env.num_envs)]
+    trainer = StepTrainer(env, agent, agents_scope=agents_scope, cfg=agent_cfg["trainer"])
+    timesteps = agent_cfg["trainer"]["timesteps"]
+    success_iteration_count = 0
+    success_env_iteration_count = 0
+    completed_iterations = 0
+
+    for i in range(timesteps):
+        if isinstance(trainer.agents, list):
+            trainer.agents = trainer.agents[0]
+
+        trainer.train()
+        completed_iterations = i + 1
+
+        success_mask = getattr(base_env, "_last_success_reward_mask", None)
+        if success_mask is None:
+            success_mask = getattr(base_env, "success", None)
+        if success_mask is not None:
+            success_mask = success_mask.reshape(-1).bool()
+            successful_envs = int(success_mask.sum().item())
+            success_env_iteration_count += successful_envs
+            if successful_envs > 0:
+                success_iteration_count += 1
+
+    configured_num_envs = int(env_cfg.scene.num_envs)
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+    _append_success_summary(
+        log_dir,
+        success_iteration_count,
+        success_env_iteration_count,
+        completed_iterations,
+        configured_num_envs,
+    )
+    print(
+        f"[INFO] Success count: {success_iteration_count} training iterations, "
+        f"{success_env_iteration_count}/{total_env_iterations} env iterations "
+        f"({success_percentage:.2f}%)"
+    )
 
     # close the simulator
     env.close()

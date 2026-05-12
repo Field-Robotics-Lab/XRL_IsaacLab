@@ -13,7 +13,9 @@ a more user-friendly way.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import shlex
 import sys
+import textwrap
 
 from isaaclab.app import AppLauncher
 
@@ -68,6 +70,7 @@ import gymnasium as gym
 import os
 import random
 from datetime import datetime
+from pprint import pformat
 
 import skrl
 import numpy as np
@@ -109,6 +112,71 @@ import XRL_isaaclab.tasks  # noqa: F401
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
+
+
+def _get_method_source(obj, method_name: str) -> str:
+    method = getattr(type(obj), method_name, None)
+    if method is None:
+        return f"[missing] {type(obj).__name__}.{method_name}"
+    try:
+        return textwrap.dedent(inspect.getsource(method)).strip()
+    except (OSError, TypeError):
+        return f"[unavailable] {type(obj).__name__}.{method_name}"
+
+
+def _write_command_report(log_dir: str, env, training_cfg: dict, extra_sections: dict | None = None) -> None:
+    os.makedirs(log_dir, exist_ok=True)
+    base_env = getattr(env, "unwrapped", env)
+    sections = [
+        "Command",
+        "-------",
+        shlex.join(sys.orig_argv),
+        "",
+        "Training Config",
+        "---------------",
+        pformat(training_cfg, sort_dicts=False),
+        "",
+        "Reward Function (_get_rewards)",
+        "------------------------------",
+        _get_method_source(base_env, "_get_rewards"),
+    ]
+    if extra_sections:
+        for title, content in extra_sections.items():
+            sections.extend(["", title, "-" * len(title), content])
+
+    with open(os.path.join(log_dir, "command.txt"), "w", encoding="utf-8") as file:
+        file.write("\n".join(sections) + "\n")
+
+
+def _append_success_summary(
+    log_dir: str,
+    success_iteration_count: int,
+    success_env_iteration_count: int,
+    completed_iterations: int,
+    configured_num_envs: int,
+) -> None:
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+    with open(os.path.join(log_dir, "command.txt"), "a", encoding="utf-8") as file:
+        file.write(
+            "\n".join(
+                [
+                    "",
+                    "Success Count",
+                    "-------------",
+                    "Criterion: success_reward mask from _get_rewards",
+                    f"Successful training iterations: {success_iteration_count}",
+                    f"Successful env iterations: {success_env_iteration_count}",
+                    f"Total env iterations: {total_env_iterations}",
+                    f"Successful env iteration percentage: {success_percentage:.2f}%",
+                    f"Configured num envs: {configured_num_envs}",
+                    f"Completed training iterations: {completed_iterations}",
+                ]
+            )
+            + "\n"
+        )
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -165,6 +233,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    base_env = env.unwrapped
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:
@@ -237,6 +306,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # success_plateau_counter = 0
     checkpoint_interval = max(1, timesteps // 100)
     early_stop_start = int(timesteps * 0.4)
+    early_stopping_params = {
+        "plateau_window": plateau_window,
+        "plateau_patience": plateau_patience,
+        "plateau_rel_delta": plateau_rel_delta,
+        "early_stop_start": early_stop_start,
+    }
+    _write_command_report(
+        log_dir,
+        base_env,
+        agent_cfg["trainer"],
+        {"Early Stopping": pformat(early_stopping_params, sort_dicts=False)},
+    )
+    success_iteration_count = 0
+    success_env_iteration_count = 0
+    completed_iterations = 0
 
     for i in range(timesteps):
 
@@ -244,6 +328,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             trainer.agents = trainer.agents[0]
 
         next_states, rewards, terminated, truncated, infos = trainer.train()
+        completed_iterations = i + 1
+
+        success_mask = getattr(base_env, "_last_success_reward_mask", None)
+        if success_mask is None:
+            success_mask = getattr(base_env, "success", None)
+        if success_mask is not None:
+            success_mask = success_mask.reshape(-1).bool()
+            successful_envs = int(success_mask.sum().item())
+            success_env_iteration_count += successful_envs
+            if successful_envs > 0:
+                success_iteration_count += 1
         
         # Original reward-based early stopping.
         tracked_total = getattr(agent, "_last_tb_total_reward_mean", None)
@@ -293,6 +388,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         if i % checkpoint_interval == 0:
             agent.save(os.path.join(checkpoint_dir, f"checkpoint_{i}.pt"))
+
+    configured_num_envs = int(env_cfg.scene.num_envs)
+    total_env_iterations = completed_iterations * configured_num_envs
+    success_percentage = (
+        100.0 * success_env_iteration_count / total_env_iterations if total_env_iterations > 0 else 0.0
+    )
+    _append_success_summary(
+        log_dir,
+        success_iteration_count,
+        success_env_iteration_count,
+        completed_iterations,
+        configured_num_envs,
+    )
+    print(
+        f"[INFO] Success count: {success_iteration_count} training iterations, "
+        f"{success_env_iteration_count}/{total_env_iterations} env iterations "
+        f"({success_percentage:.2f}%)"
+    )
 
     #close the simulator
     env.close()

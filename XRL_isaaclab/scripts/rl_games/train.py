@@ -8,7 +8,10 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
+import shlex
 import sys
+import textwrap
 from distutils.util import strtobool
 
 from isaaclab.app import AppLauncher
@@ -60,6 +63,7 @@ import math
 import os
 import random
 from datetime import datetime
+from pprint import pformat
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
@@ -82,6 +86,36 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import XRL_isaaclab.tasks  # noqa: F401
+
+
+def _get_method_source(obj, method_name: str) -> str:
+    method = getattr(type(obj), method_name, None)
+    if method is None:
+        return f"[missing] {type(obj).__name__}.{method_name}"
+    try:
+        return textwrap.dedent(inspect.getsource(method)).strip()
+    except (OSError, TypeError):
+        return f"[unavailable] {type(obj).__name__}.{method_name}"
+
+
+def _write_command_report(log_dir: str, env, training_cfg: dict) -> None:
+    os.makedirs(log_dir, exist_ok=True)
+    base_env = getattr(env, "unwrapped", env)
+    sections = [
+        "Command",
+        "-------",
+        shlex.join(sys.orig_argv),
+        "",
+        "Training Config",
+        "---------------",
+        pformat(training_cfg, sort_dicts=False),
+        "",
+        "Reward Function (_get_rewards)",
+        "------------------------------",
+        _get_method_source(base_env, "_get_rewards"),
+    ]
+    with open(os.path.join(log_dir, "command.txt"), "w", encoding="utf-8") as file:
+        file.write("\n".join(sections) + "\n")
 
 
 @hydra_task_config(args_cli.task, "rl_games_cfg_entry_point")
@@ -146,6 +180,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    _write_command_report(os.path.join(log_root_path, log_dir), env, agent_cfg["params"]["config"])
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

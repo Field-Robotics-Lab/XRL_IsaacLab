@@ -10,9 +10,11 @@
 
 import argparse
 import contextlib
+import inspect
+import shlex
 import signal
 import sys
-from pathlib import Path
+import textwrap
 
 from isaaclab.app import AppLauncher
 
@@ -73,6 +75,7 @@ import numpy as np
 import os
 import random
 from datetime import datetime
+from pprint import pformat
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, LogEveryNTimesteps
@@ -94,6 +97,36 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import XRL_isaaclab.tasks  # noqa: F401
+
+
+def _get_method_source(obj, method_name: str) -> str:
+    method = getattr(type(obj), method_name, None)
+    if method is None:
+        return f"[missing] {type(obj).__name__}.{method_name}"
+    try:
+        return textwrap.dedent(inspect.getsource(method)).strip()
+    except (OSError, TypeError):
+        return f"[unavailable] {type(obj).__name__}.{method_name}"
+
+
+def _write_command_report(log_dir: str, env, training_cfg: dict) -> None:
+    os.makedirs(log_dir, exist_ok=True)
+    base_env = getattr(env, "unwrapped", env)
+    sections = [
+        "Command",
+        "-------",
+        shlex.join(sys.orig_argv),
+        "",
+        "Training Config",
+        "---------------",
+        pformat(training_cfg, sort_dicts=False),
+        "",
+        "Reward Function (_get_rewards)",
+        "------------------------------",
+        _get_method_source(base_env, "_get_rewards"),
+    ]
+    with open(os.path.join(log_dir, "command.txt"), "w", encoding="utf-8") as file:
+        file.write("\n".join(sections) + "\n")
 
 
 @hydra_task_config(args_cli.task, "sb3_cfg_entry_point")
@@ -128,18 +161,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
-    # save command used to run the script
-    command = " ".join(sys.orig_argv)
-    (Path(log_dir) / "command.txt").write_text(command)
-
     # post-process agent configuration
     agent_cfg = process_sb3_cfg(agent_cfg, env_cfg.scene.num_envs)
+    training_cfg_report = dict(agent_cfg)
     # read configurations about the agent-training
     policy_arch = agent_cfg.pop("policy")
     n_timesteps = agent_cfg.pop("n_timesteps")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    _write_command_report(log_dir, env, training_cfg_report)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

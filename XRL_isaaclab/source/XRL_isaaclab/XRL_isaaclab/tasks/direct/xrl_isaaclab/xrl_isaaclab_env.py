@@ -159,7 +159,6 @@ class XrlIsaaclabEnv(DirectRLEnv):
         self.actions = actions.clone()
         self._visualize_markers()
 
-    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX v
     def _apply_action(self) -> None:
         #Setting values to tie the wheel velocities on either side together.
         left = self.actions[:,0:1]
@@ -279,23 +278,17 @@ class XrlIsaaclabEnv(DirectRLEnv):
         #     -1*pitch_sig
         # )
 
-        alignment_reward = self.dot_norm
-        #alignment_reward = self.dot
+        #alignment_reward = self.dot_norm
+        alignment_reward = torch.exp(self.dot_norm)
 
         is_aligned = alignment_reward >= 0.0
-        scale = 0.001
+        scale = 0.005
         dist_delta = (self._prev_dist - self.dist)/scale
-        distance_reward = dist_delta
-        # distance_reward = torch.where(
-        #     is_aligned,
-        #     dist_delta,
-        #     0.5 * dist_delta
-        # )
+        distance_reward = torch.clamp(dist_delta, -5.0, 5.0)
         self._prev_dist = self.dist.detach()
 
-        speed_reward = torch.sigmoid(self.forward_speed)
-        #speed_reward = self.forward_speed
-        #speed_reward = torch.tanh(self.forward_speed)
+        #speed_reward = torch.sigmoid(self.forward_speed)
+        speed_reward = torch.tanh(self.forward_speed)
 
         success_sig = torch.full((self.cfg.scene.num_envs,1), 100, device=self.device)
         success_reward = torch.where(
@@ -303,10 +296,11 @@ class XrlIsaaclabEnv(DirectRLEnv):
             success_sig,
             torch.zeros_like(self.dist)
         )
+        # ADDED: Preserve the exact success_reward criterion for training-script success counting.
+        self._last_success_reward_mask = self.success.detach().clone()
 
 
-        total_reward = (speed_reward * alignment_reward) + distance_reward + success_reward
-        print(f'A:{alignment_reward[0][0]} S:{speed_reward[0][0]} D:{distance_reward[0][0]} Tot:{total_reward[0][0]}')
+        total_reward = (alignment_reward) + distance_reward + success_reward
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:

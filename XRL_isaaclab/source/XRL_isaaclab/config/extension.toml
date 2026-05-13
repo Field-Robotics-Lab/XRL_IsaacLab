@@ -20,6 +20,7 @@ keywords = ["extension", "template", "isaaclab"]
 "isaaclab_mimic" = {}
 "isaaclab_rl" = {}
 "isaaclab_tasks" = {}
+"isaacsim.robot.wheeled_robots" = {}
 # NOTE: Add additional dependencies here
 
 [[python.module]]
